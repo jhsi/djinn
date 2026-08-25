@@ -2,6 +2,8 @@
 
 A local-first sandbox for learning about distributed systems. Djinn visualizes deterministic simulations of nodes, messages, time, failures, and algorithms in one browser tab.
 
+<img width="1234" height="919" alt="image" src="https://github.com/user-attachments/assets/146eb871-4e50-46ce-978b-9598bb517553" />
+
 ## Run
 
 ```bash
