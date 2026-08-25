@@ -2,6 +2,10 @@
 
 A local-first sandbox for learning about distributed systems. Djinn visualizes deterministic simulations of nodes, messages, time, failures, and algorithms in one browser tab.
 
+A local-first sandbox for learning about distributed systems. Djinn visualizes deterministic simulations of nodes, messages, time, failures, and algorithms in one browser tab.
+
+Live at [jameshsi.com/djinn](https://jameshsi.com/djinn/).
+
 <img width="1234" height="919" alt="image" src="https://github.com/user-attachments/assets/146eb871-4e50-46ce-978b-9598bb517553" />
 
 ## Run
@@ -15,6 +19,8 @@ npm run dev
 npm test
 npm run build
 ```
+
+Pushes to `main` publish the production build to GitHub Pages at `/djinn/`. Local `npm run dev` still serves from `/`.
 
 ## How to use it
 
