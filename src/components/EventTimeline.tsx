@@ -1,50 +1,71 @@
+import { useEffect, useRef } from "react";
 import * as stylex from "@stylexjs/stylex";
-import type { Snapshot } from "../simulation/types";
+import type { LogEntry, SimulationEvent, Snapshot } from "../simulation/types";
 import { formatTime } from "../simulation/format";
 import { colors, fonts } from "../ui/theme.stylex";
 import { describeEvent, eventKey, type Selection } from "../ui/selection";
+import { PlaybackRuler } from "./PlaybackRuler";
 
 type Props = {
   snapshot: Snapshot;
   selection: Selection;
-  onSelect: (selection: Selection) => void;
+  onSeekTime: (time: number) => void;
+  onSeekLog: (entry: LogEntry) => void;
+  onSeekPending: (event: SimulationEvent) => void;
 };
 
-export function EventTimeline({ snapshot, selection, onSelect }: Props) {
+export function EventTimeline({
+  snapshot,
+  selection,
+  onSeekTime,
+  onSeekLog,
+  onSeekPending,
+}: Props) {
+  const currentRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    currentRef.current?.scrollIntoView({ block: "nearest" });
+  }, [snapshot.playheadLogSeq, snapshot.currentTime]);
+
+  const pending = snapshot.atTip ? snapshot.pendingEvents : [];
+
   return (
     <section {...stylex.props(styles.wrap)}>
       <header {...stylex.props(styles.head)}>
         <span>SYSTEM TRACE</span>
         <span {...stylex.props(styles.meta)}>
-          next {snapshot.nextEvent ? formatTime(snapshot.nextEvent.timestamp) : "—"}
-          {"  "}·{"  "}
-          {snapshot.pendingCount} pending
+          {snapshot.atTip
+            ? `next ${snapshot.nextEvent ? formatTime(snapshot.nextEvent.timestamp) : "—"}  ·  ${snapshot.pendingCount} pending`
+            : `playhead ${formatTime(snapshot.currentTime)}  ·  recorded to ${formatTime(snapshot.exploredUntil)}`}
         </span>
       </header>
+      <PlaybackRuler snapshot={snapshot} onSeek={onSeekTime} />
       <div {...stylex.props(styles.list)}>
-        {snapshot.eventLog.map((entry) => {
+        {snapshot.tapeLog.map((entry) => {
           const key = `log:${entry.seq}`;
           const selected = selection?.kind === "event" && selection.key === key;
+          const current = entry.seq === snapshot.playheadLogSeq;
+          const ahead = entry.seq > snapshot.playheadLogSeq;
           return (
             <button
               type="button"
               key={key}
-              onClick={() => onSelect({ kind: "event", key })}
+              ref={current ? currentRef : undefined}
+              onClick={() => onSeekLog(entry)}
               {...stylex.props(
                 styles.row,
-                styles.done,
+                ahead ? styles.ahead : styles.done,
+                current && styles.current,
                 selected && styles.selected,
               )}
             >
               <span {...stylex.props(styles.time)}>{formatTime(entry.timestamp)}</span>
-              <span {...stylex.props(styles.kind, kindStyle(entry.kind))}>
-                {entry.kind}
-              </span>
+              <span {...stylex.props(styles.kind, kindStyle(entry.kind))}>{entry.kind}</span>
               <span {...stylex.props(styles.text)}>{entry.text}</span>
             </button>
           );
         })}
-        {snapshot.pendingEvents.map((event, i) => {
+        {pending.map((event, i) => {
           const key = eventKey(event);
           const isNext = i === 0;
           const selected = selection?.kind === "event" && selection.key === key;
@@ -52,7 +73,8 @@ export function EventTimeline({ snapshot, selection, onSelect }: Props) {
             <button
               type="button"
               key={key}
-              onClick={() => onSelect({ kind: "event", key })}
+              ref={isNext && snapshot.tapeLog.length === 0 ? currentRef : undefined}
+              onClick={() => onSeekPending(event)}
               {...stylex.props(
                 styles.row,
                 isNext ? styles.next : styles.future,
@@ -69,14 +91,9 @@ export function EventTimeline({ snapshot, selection, onSelect }: Props) {
             </button>
           );
         })}
-        {snapshot.eventLog.length === 0 && snapshot.pendingEvents.length === 0 ? (
+        {snapshot.tapeLog.length === 0 && pending.length === 0 ? (
           <div {...stylex.props(styles.empty)}>no events yet</div>
         ) : null}
-      </div>
-      <div {...stylex.props(styles.bar)}>
-        <span {...stylex.props(styles.barInk)} />
-        <span {...stylex.props(styles.barCoral)} />
-        <span {...stylex.props(styles.barLime)} />
       </div>
     </section>
   );
@@ -98,8 +115,8 @@ const styles = stylex.create({
     borderTopStyle: "solid",
     borderTopColor: colors.faint,
     backgroundColor: colors.white,
-    minHeight: 168,
-    maxHeight: 220,
+    minHeight: 220,
+    maxHeight: 280,
   },
   head: {
     display: "flex",
@@ -147,6 +164,16 @@ const styles = stylex.create({
   done: {
     color: colors.muted,
   },
+  ahead: {
+    color: colors.ink,
+    opacity: 0.55,
+  },
+  current: {
+    backgroundColor: colors.paleLime,
+    color: colors.ink,
+    fontWeight: 500,
+    borderLeftColor: colors.lime,
+  },
   next: {
     backgroundColor: colors.paleLime,
     color: colors.ink,
@@ -186,12 +213,4 @@ const styles = stylex.create({
     color: colors.muted,
     fontSize: 12,
   },
-  bar: {
-    display: "flex",
-    height: 4,
-    flexShrink: 0,
-  },
-  barInk: { flex: 3, backgroundColor: colors.ink },
-  barCoral: { flex: 1, backgroundColor: colors.coral },
-  barLime: { flex: 2, backgroundColor: colors.lime },
 });

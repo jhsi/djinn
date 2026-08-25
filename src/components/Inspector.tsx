@@ -93,7 +93,7 @@ function render(snapshot: Snapshot, scenario: Scenario, selection: Selection) {
   }
 
   if (selection?.kind === "event") {
-    const log = snapshot.eventLog.find((e) => `log:${e.seq}` === selection.key);
+    const log = snapshot.tapeLog.find((e) => `log:${e.seq}` === selection.key);
     if (log) {
       return (
         <Block title="COMPLETED EVENT">
@@ -143,7 +143,7 @@ function render(snapshot: Snapshot, scenario: Scenario, selection: Selection) {
         }
       />
       <div {...stylex.props(styles.hint)}>
-        Select a node, in-flight message, link, or log row.
+        Select a node, in-flight message, or link. Click a trace row to seek to that moment.
       </div>
     </Block>
   );
@@ -176,7 +176,7 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     minHeight: 0,
-    flex: "1 1 0",
+    flex: "1 1 auto",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.faint,

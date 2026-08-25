@@ -73,6 +73,11 @@ export type Snapshot = {
   inFlight: Message[];
   pendingEvents: SimulationEvent[];
   eventLog: LogEntry[];
+  tapeLog: LogEntry[];
+  playheadLogSeq: number;
+  atTip: boolean;
+  duration: number;
+  exploredUntil: number;
   partitions: [string, string][];
   nextEvent: SimulationEvent | null;
   pendingCount: number;

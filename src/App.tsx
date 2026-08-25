@@ -6,13 +6,12 @@ import type { PlaybackSpeed } from "./simulation/types";
 import { colors, fonts, lightTheme } from "./ui/theme.stylex";
 import { Logo } from "./ui/Logo";
 import { useTheme } from "./ui/Theme";
-import type { Selection } from "./ui/selection";
+import { selectionFromLog, type Selection } from "./ui/selection";
 import { NetworkCanvas } from "./components/NetworkCanvas";
 import { EventTimeline } from "./components/EventTimeline";
 import { Inspector } from "./components/Inspector";
 import { SimulationControls } from "./components/SimulationControls";
 import { PerturbationControls } from "./components/PerturbationControls";
-import { ManualSend } from "./components/ManualSend";
 
 export default function App() {
   const { theme, palette, toggleTheme } = useTheme();
@@ -48,15 +47,25 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
-      if (e.code === "Space") {
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || tag === "BUTTON") return;
+      if (e.code === "Space" || e.key === "p") {
         e.preventDefault();
         if (sim.status === "playing") sim.pause();
-        sim.step();
-      }
-      if (e.key === "p") {
-        if (sim.status === "playing") sim.pause();
         else sim.play();
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        sim.seekToPrevEvent();
+        const snap = sim.snapshot();
+        const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
+        setSelection(entry ? selectionFromLog(entry, snap) : null);
+      }
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        sim.seekToNextEvent();
+        const snap = sim.snapshot();
+        const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
+        setSelection(entry ? selectionFromLog(entry, snap) : null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -162,18 +171,22 @@ export default function App() {
             onCrash={(id) => sim.crashNode(id)}
             onRestart={(id) => sim.restartNode(id)}
           />
-          <ManualSend
-            snapshot={snapshot}
-            onSend={(from, to, payload, latency) =>
-              sim.injectMessage(from, to, payload, latency)
-            }
-          />
         </aside>
       </div>
       <EventTimeline
         snapshot={snapshot}
         selection={selection}
-        onSelect={setSelection}
+        onSeekTime={(time) => sim.seekToTime(time)}
+        onSeekLog={(entry) => {
+          sim.seekToLog(entry.seq);
+          setSelection(selectionFromLog(entry, sim.snapshot()));
+        }}
+        onSeekPending={(event) => {
+          sim.seekToTime(event.timestamp);
+          const snap = sim.snapshot();
+          const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
+          setSelection(entry ? selectionFromLog(entry, snap) : null);
+        }}
       />
     </div>
   );
@@ -296,7 +309,7 @@ const styles = stylex.create({
     flex: "1 1 auto",
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "1fr 320px",
+    gridTemplateColumns: "1fr 400px",
   },
   side: {
     display: "flex",

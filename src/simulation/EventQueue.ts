@@ -51,4 +51,9 @@ export class EventQueue {
     this.items = [];
     this.nextSeq = 0;
   }
+
+  restore(items: SimulationEvent[], nextSeq: number): void {
+    this.items = items.map((event) => ({ ...event }));
+    this.nextSeq = nextSeq;
+  }
 }

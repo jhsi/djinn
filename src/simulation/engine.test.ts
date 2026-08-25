@@ -248,3 +248,85 @@ describe("Raft", () => {
     expect(later[0].id).toBe(leaders[0].id);
   });
 });
+
+describe("Playback seek", () => {
+  it("seeks back to a completed event and restores node state", () => {
+    const sim = new Simulation(replication);
+    sim.invokeAction("set-x-5");
+    sim.step();
+    sim.step();
+    expect(xOf(sim, "B")).toBe(5);
+    expect(xOf(sim, "C")).toBe(5);
+
+    const deliverB = sim
+      .snapshot()
+      .tapeLog.find((e) => e.kind === "deliver" && e.text.includes("B receives"));
+    expect(deliverB).toBeTruthy();
+    sim.seekToLog(deliverB!.seq);
+    expect(sim.currentTime).toBe(500);
+    expect(xOf(sim, "A")).toBe(5);
+    expect(xOf(sim, "B")).toBe(5);
+    expect(xOf(sim, "C")).toBe(0);
+    expect(sim.snapshot().inFlight.some((m) => m.to === "C")).toBe(true);
+  });
+
+  it("seeks between events without executing the next one", () => {
+    const sim = new Simulation(replication);
+    sim.invokeAction("set-x-5");
+    sim.step();
+    sim.step();
+    sim.seekToTime(1000);
+    expect(sim.currentTime).toBe(1000);
+    expect(xOf(sim, "B")).toBe(5);
+    expect(xOf(sim, "C")).toBe(0);
+    expect(sim.snapshot().inFlight.some((m) => m.to === "C")).toBe(true);
+  });
+
+  it("fast-forwards through a future pending event", () => {
+    const sim = new Simulation(replication);
+    sim.invokeAction("set-x-5");
+    expect(xOf(sim, "B")).toBe(0);
+    sim.seekToTime(500);
+    expect(sim.currentTime).toBe(500);
+    expect(xOf(sim, "B")).toBe(5);
+    expect(xOf(sim, "C")).toBe(0);
+  });
+
+  it("truncates recorded future after a mutation behind the playhead", () => {
+    const sim = new Simulation(replication);
+    sim.invokeAction("set-x-5");
+    sim.step();
+    sim.step();
+    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C receives"))).toBe(
+      true,
+    );
+
+    const send = sim.snapshot().tapeLog.find((e) => e.kind === "send" && e.text.includes("→ B"));
+    sim.seekToLog(send!.seq);
+    const toC = sim.snapshot().inFlight.find((m) => m.to === "C");
+    expect(toC).toBeTruthy();
+    sim.dropMessage(toC!.id);
+
+    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C receives"))).toBe(
+      false,
+    );
+    while (sim.step()) {
+      /* drain */
+    }
+    expect(xOf(sim, "C")).toBe(0);
+    expect(xOf(sim, "B")).toBe(5);
+  });
+
+  it("plays through recorded tape without rewriting history", () => {
+    const sim = new Simulation(replication);
+    sim.invokeAction("set-x-5");
+    sim.step();
+    sim.step();
+    const recorded = sim.snapshot().tapeLog.map((e) => `${e.seq}:${e.kind}:${e.text}`);
+    sim.seekToTime(0);
+    sim.play();
+    sim.advanceBy(5000);
+    expect(sim.snapshot().tapeLog.map((e) => `${e.seq}:${e.kind}:${e.text}`)).toEqual(recorded);
+    expect(xOf(sim, "C")).toBe(5);
+  });
+});

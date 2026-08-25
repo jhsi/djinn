@@ -1,6 +1,6 @@
 import { EventQueue } from "./EventQueue";
 import { edgeKey, parseEdgeKey, payloadLabel } from "./format";
-import { createRng } from "./seededRandom";
+import { SeededRng } from "./seededRandom";
 import type {
   LogEntry,
   LogKind,
@@ -16,6 +16,45 @@ import type {
   TimerInfo,
 } from "./types";
 
+type Checkpoint = {
+  currentTime: number;
+  nodes: Node[];
+  messages: [string, Message][];
+  partitions: string[];
+  queueItems: SimulationEvent[];
+  queueSeq: number;
+  logEntries: LogEntry[];
+  timers: [string, TimerInfo][];
+  msgCounter: number;
+  timerCounter: number;
+  logSeq: number;
+  rngState: number;
+};
+
+function cloneNode(node: Node): Node {
+  return { id: node.id, status: node.status, state: structuredClone(node.state) };
+}
+
+function cloneMessage(message: Message): Message {
+  return { ...message, payload: structuredClone(message.payload) };
+}
+
+function cloneLog(entry: LogEntry): LogEntry {
+  return { ...entry, meta: entry.meta ? structuredClone(entry.meta) : undefined };
+}
+
+function cloneEvent(event: SimulationEvent): SimulationEvent {
+  return { ...event };
+}
+
+function cloneTimer(timer: TimerInfo): TimerInfo {
+  return { ...timer, data: structuredClone(timer.data) };
+}
+
+function lastLogSeq(entries: LogEntry[]): number {
+  return entries.length === 0 ? -1 : entries[entries.length - 1].seq;
+}
+
 export class Simulation {
   readonly scenario: Scenario;
   private nodes: Node[] = [];
@@ -24,12 +63,17 @@ export class Simulation {
   private queue = new EventQueue();
   private logEntries: LogEntry[] = [];
   private timers = new Map<string, TimerInfo>();
-  private rng: () => number = createRng(1);
+  private rng = new SeededRng(1);
   private msgCounter = 0;
   private timerCounter = 0;
   private logSeq = 0;
   private listeners = new Set<() => void>();
   private cached: Snapshot | null = null;
+
+  private frames: Checkpoint[] = [];
+  private cursor = 0;
+  private tapeLog: LogEntry[] = [];
+  private exploredUntil = 0;
 
   currentTime = 0;
   status: SimStatus = "paused";
@@ -38,6 +82,10 @@ export class Simulation {
   constructor(scenario: Scenario) {
     this.scenario = scenario;
     this.bootstrap();
+    this.frames = [this.capture()];
+    this.cursor = 0;
+    this.tapeLog = this.logEntries.map(cloneLog);
+    this.exploredUntil = this.currentTime;
     this.cached = this.buildSnapshot();
   }
 
@@ -60,7 +108,7 @@ export class Simulation {
       status: n.status,
       state: { ...n.state },
     }));
-    this.rng = createRng(initial.seed ?? 1);
+    this.rng = new SeededRng(initial.seed ?? 1);
     this.scenario.onStart(this.ctx);
   }
 
@@ -76,6 +124,10 @@ export class Simulation {
     this.timerCounter = 0;
     this.logSeq = 0;
     this.bootstrap();
+    this.frames = [this.capture()];
+    this.cursor = 0;
+    this.tapeLog = this.logEntries.map(cloneLog);
+    this.exploredUntil = this.currentTime;
     this.notify();
   }
 
@@ -95,10 +147,13 @@ export class Simulation {
   }
 
   step(): SimulationEvent | null {
-    const event = this.queue.pop();
-    if (!event) return null;
-    this.currentTime = event.timestamp;
-    this.dispatch(event);
+    this.status = "paused";
+    if (this.cursor < this.frames.length - 1) {
+      this.restore(this.cursor + 1);
+      this.notify();
+      return null;
+    }
+    const event = this.executeNext();
     this.notify();
     return event;
   }
@@ -107,29 +162,114 @@ export class Simulation {
     if (this.status !== "playing") return;
     const target = this.currentTime + ms;
     let processed = 0;
+
+    while (this.cursor < this.frames.length - 1 && processed < maxEvents) {
+      const nextFrame = this.frames[this.cursor + 1];
+      if (nextFrame.currentTime > target) {
+        this.currentTime = target;
+        this.notify();
+        return;
+      }
+      this.restore(this.cursor + 1);
+      processed += 1;
+    }
+
     while (processed < maxEvents) {
       const next = this.queue.peek();
       if (!next || next.timestamp > target) break;
-      const event = this.queue.pop();
-      if (!event) break;
-      this.currentTime = event.timestamp;
-      this.dispatch(event);
+      this.executeNext();
       processed += 1;
     }
-    if (target > this.currentTime) this.currentTime = target;
+
+    if (this.queue.peek()) {
+      if (target > this.currentTime) {
+        this.currentTime = target;
+        this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
+      }
+    } else if (this.atTip()) {
+      this.status = "paused";
+    }
+
+    this.notify();
+  }
+
+  seekToTime(t: number): void {
+    this.status = "paused";
+    const target = Math.min(Math.max(0, t), this.horizon());
+
+    if (target > this.exploredUntil + 1e-9) {
+      this.restore(this.frames.length - 1);
+      this.runUntil(target);
+      this.notify();
+      return;
+    }
+
+    let index = 0;
+    for (let i = 0; i < this.frames.length; i += 1) {
+      if (this.frames[i].currentTime <= target) index = i;
+    }
+    this.restore(index);
+    if (target > this.currentTime) {
+      const next = this.frames[index + 1];
+      if (!next || next.currentTime > target) this.currentTime = target;
+    }
+    this.notify();
+  }
+
+  seekToLog(seq: number): void {
+    this.status = "paused";
+    const index = this.frames.findIndex((frame) => lastLogSeq(frame.logEntries) >= seq);
+    if (index >= 0) {
+      this.restore(index);
+      this.notify();
+      return;
+    }
+    const entry = this.tapeLog.find((e) => e.seq === seq);
+    if (entry) {
+      this.seekToTime(entry.timestamp);
+      return;
+    }
+    this.notify();
+  }
+
+  seekToPrevEvent(): void {
+    this.status = "paused";
+    const seq = lastLogSeq(this.logEntries);
+    const prev = [...this.tapeLog].reverse().find((entry) => entry.seq < seq);
+    if (prev) {
+      this.seekToLog(prev.seq);
+      return;
+    }
+    this.restore(0);
+    this.notify();
+  }
+
+  seekToNextEvent(): void {
+    this.status = "paused";
+    const seq = lastLogSeq(this.logEntries);
+    const next = this.tapeLog.find((entry) => entry.seq > seq);
+    if (next) {
+      this.seekToLog(next.seq);
+      return;
+    }
+    this.restore(this.frames.length - 1);
+    this.executeNext();
     this.notify();
   }
 
   dropMessage(messageId: string): boolean {
     const message = this.messages.get(messageId);
     if (!message) return false;
+    this.branchIfNeeded();
     this.messages.delete(messageId);
     this.queue.remove((e) => e.type === "deliver" && e.messageId === messageId);
-    this.pushLog(
-      "drop",
-      `dropped ${message.from} → ${message.to} ${payloadLabel(message.payload)}`,
-      { messageId, reason: "user" },
-    );
+    this.pushLog("drop", `dropped ${message.from} → ${message.to} ${payloadLabel(message.payload)}`, {
+      messageId,
+      from: message.from,
+      to: message.to,
+      reason: "user",
+    });
+    this.recordFrame();
     this.notify();
     return true;
   }
@@ -137,6 +277,7 @@ export class Simulation {
   delayMessage(messageId: string, newTimestamp: number): boolean {
     const message = this.messages.get(messageId);
     if (!message) return false;
+    this.branchIfNeeded();
     const deliverAt = Math.max(newTimestamp, this.currentTime);
     const previous = message.deliverAt;
     message.deliverAt = deliverAt;
@@ -150,8 +291,9 @@ export class Simulation {
     this.pushLog(
       "delay",
       `delayed ${message.from} → ${message.to} ${previous}ms → ${deliverAt}ms`,
-      { messageId, previous, deliverAt },
+      { messageId, from: message.from, to: message.to, previous, deliverAt },
     );
+    this.recordFrame();
     this.notify();
     return true;
   }
@@ -159,52 +301,60 @@ export class Simulation {
   partition(a: string, b: string): void {
     const key = edgeKey(a, b);
     if (this.partitions.has(key)) return;
+    this.branchIfNeeded();
     this.partitions.add(key);
-    const inFlight = [...this.messages.values()].filter(
-      (m) => edgeKey(m.from, m.to) === key,
-    );
+    const inFlight = [...this.messages.values()].filter((m) => edgeKey(m.from, m.to) === key);
     for (const message of inFlight) {
       this.messages.delete(message.id);
       this.queue.remove((e) => e.type === "deliver" && e.messageId === message.id);
       this.pushLog(
         "drop",
         `dropped ${message.from} → ${message.to} ${payloadLabel(message.payload)} (partition)`,
-        { messageId: message.id, reason: "partition" },
+        { messageId: message.id, from: message.from, to: message.to, reason: "partition" },
       );
     }
-    this.pushLog("partition", `partition ${a} ↔ ${b}`);
+    this.pushLog("partition", `partition ${a} ↔ ${b}`, { a, b });
+    this.recordFrame();
     this.notify();
   }
 
   healPartition(a: string, b: string): void {
     const key = edgeKey(a, b);
     if (!this.partitions.has(key)) return;
+    this.branchIfNeeded();
     this.partitions.delete(key);
-    this.pushLog("heal", `heal ${a} ↔ ${b}`);
+    this.pushLog("heal", `heal ${a} ↔ ${b}`, { a, b });
+    this.recordFrame();
     this.notify();
   }
 
   crashNode(nodeId: string): void {
     const node = this.requireNode(nodeId);
     if (node.status === "stopped") return;
+    this.branchIfNeeded();
     node.status = "stopped";
     this.cancelTimers(nodeId);
-    this.pushLog("crash", `${nodeId} crashed`);
+    this.pushLog("crash", `${nodeId} crashed`, { nodeId });
     this.scenario.onCrash?.(nodeId, this.ctx);
+    this.recordFrame();
     this.notify();
   }
 
   restartNode(nodeId: string): void {
     const node = this.requireNode(nodeId);
     if (node.status === "running") return;
+    this.branchIfNeeded();
     node.status = "running";
-    this.pushLog("restart", `${nodeId} restarted`);
+    this.pushLog("restart", `${nodeId} restarted`, { nodeId });
     this.scenario.onRestart?.(nodeId, this.ctx);
+    this.recordFrame();
     this.notify();
   }
 
   invokeAction(actionId: string): void {
+    this.branchIfNeeded();
     this.scenario.onAction?.(actionId, this.ctx);
+    this.recordFrame();
     this.notify();
   }
 
@@ -214,7 +364,9 @@ export class Simulation {
     payload: unknown,
     latency: number,
   ): string | null {
+    this.branchIfNeeded();
     const id = this.ctx.sendMessage(from, to, payload, latency);
+    this.recordFrame();
     this.notify();
     return id;
   }
@@ -223,30 +375,113 @@ export class Simulation {
     return this.cached ?? (this.cached = this.buildSnapshot());
   }
 
+  private atTip(): boolean {
+    return this.cursor === this.frames.length - 1;
+  }
+
+  private horizon(): number {
+    const lastTape = this.tapeLog.length === 0 ? 0 : this.tapeLog[this.tapeLog.length - 1].timestamp;
+    const pending = this.queue.toArray();
+    const lastPending = pending.length === 0 ? 0 : pending[pending.length - 1].timestamp;
+    return Math.max(this.exploredUntil, this.currentTime, lastTape, lastPending);
+  }
+
+  private capture(): Checkpoint {
+    return {
+      currentTime: this.currentTime,
+      nodes: this.nodes.map(cloneNode),
+      messages: [...this.messages.entries()].map(([id, message]) => [id, cloneMessage(message)]),
+      partitions: [...this.partitions],
+      queueItems: this.queue.toArray().map(cloneEvent),
+      queueSeq: this.queue.sequence,
+      logEntries: this.logEntries.map(cloneLog),
+      timers: [...this.timers.entries()].map(([id, timer]) => [id, cloneTimer(timer)]),
+      msgCounter: this.msgCounter,
+      timerCounter: this.timerCounter,
+      logSeq: this.logSeq,
+      rngState: this.rng.getState(),
+    };
+  }
+
+  private restore(index: number): void {
+    const frame = this.frames[index];
+    this.currentTime = frame.currentTime;
+    this.nodes = frame.nodes.map(cloneNode);
+    this.messages = new Map(frame.messages.map(([id, message]) => [id, cloneMessage(message)]));
+    this.partitions = new Set(frame.partitions);
+    this.queue.restore(frame.queueItems.map(cloneEvent), frame.queueSeq);
+    this.logEntries = frame.logEntries.map(cloneLog);
+    this.timers = new Map(frame.timers.map(([id, timer]) => [id, cloneTimer(timer)]));
+    this.msgCounter = frame.msgCounter;
+    this.timerCounter = frame.timerCounter;
+    this.logSeq = frame.logSeq;
+    this.rng.setState(frame.rngState);
+    this.cursor = index;
+  }
+
+  private branchIfNeeded(): void {
+    if (this.cursor >= this.frames.length - 1) return;
+    this.frames.splice(this.cursor + 1);
+    this.tapeLog = this.logEntries.map(cloneLog);
+    this.exploredUntil = this.currentTime;
+  }
+
+  private recordFrame(): void {
+    this.frames.push(this.capture());
+    this.cursor = this.frames.length - 1;
+    this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
+    this.tapeLog = this.logEntries.map(cloneLog);
+  }
+
+  private executeNext(): SimulationEvent | null {
+    this.branchIfNeeded();
+    const event = this.queue.pop();
+    if (!event) return null;
+    this.currentTime = event.timestamp;
+    this.dispatch(event);
+    this.recordFrame();
+    return event;
+  }
+
+  private runUntil(target: number): void {
+    while (true) {
+      const next = this.queue.peek();
+      if (!next || next.timestamp > target) break;
+      this.executeNext();
+    }
+    if (this.queue.peek() && target > this.currentTime) {
+      this.currentTime = target;
+      this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
+    }
+  }
+
   private buildSnapshot(): Snapshot {
     const pending = this.queue.toArray();
+    const horizon = this.horizon();
+    const pad = Math.max(250, horizon * 0.08);
     return {
       currentTime: this.currentTime,
       status: this.status,
       speed: this.speed,
-      nodes: this.nodes.map((n) => ({
-        id: n.id,
-        status: n.status,
-        state: structuredClone(n.state),
-      })),
-      inFlight: [...this.messages.values()].map((m) => ({ ...m })),
-      pendingEvents: pending.map((e) => ({ ...e })),
-      eventLog: this.logEntries.map((e) => ({ ...e })),
+      nodes: this.nodes.map(cloneNode),
+      inFlight: [...this.messages.values()].map(cloneMessage),
+      pendingEvents: pending.map(cloneEvent),
+      eventLog: this.logEntries.map(cloneLog),
+      tapeLog: this.tapeLog.map(cloneLog),
+      playheadLogSeq: lastLogSeq(this.logEntries),
+      atTip: this.atTip(),
+      duration: Math.max(horizon + pad, 500),
+      exploredUntil: this.exploredUntil,
       partitions: [...this.partitions].map(parseEdgeKey),
-      nextEvent: pending[0] ? { ...pending[0] } : null,
+      nextEvent: pending[0] ? cloneEvent(pending[0]) : null,
       pendingCount: pending.length,
-      timers: [...this.timers.values()].map((t) => ({ ...t })),
+      timers: [...this.timers.values()].map(cloneTimer),
     };
   }
 
   getMessage(messageId: string): Message | undefined {
     const m = this.messages.get(messageId);
-    return m ? { ...m } : undefined;
+    return m ? cloneMessage(m) : undefined;
   }
 
   private dispatch(event: SimulationEvent): void {
@@ -266,7 +501,7 @@ export class Simulation {
       this.pushLog(
         "drop",
         `dropped ${message.from} → ${message.to} ${payloadLabel(message.payload)} (partition)`,
-        { messageId, reason: "partition" },
+        { messageId, from: message.from, to: message.to, reason: "partition" },
       );
       return;
     }
@@ -276,16 +511,17 @@ export class Simulation {
       this.pushLog(
         "drop",
         `dropped ${message.from} → ${message.to} ${payloadLabel(message.payload)} (node ${message.to} stopped)`,
-        { messageId, reason: "node-stopped" },
+        { messageId, from: message.from, to: message.to, reason: "node-stopped" },
       );
       return;
     }
 
-    this.pushLog(
-      "deliver",
-      `${message.to} receives ${payloadLabel(message.payload)} from ${message.from}`,
-      { messageId, payload: message.payload },
-    );
+    this.pushLog("deliver", `${message.to} receives ${payloadLabel(message.payload)} from ${message.from}`, {
+      messageId,
+      from: message.from,
+      to: message.to,
+      payload: message.payload,
+    });
     this.scenario.onMessage(message.to, message, this.ctx);
   }
 
@@ -293,6 +529,11 @@ export class Simulation {
     this.timers.delete(event.id);
     const node = this.requireNode(event.nodeId);
     if (node.status === "stopped") return;
+    this.pushLog("timer", `${event.nodeId} timer ${event.name}`, {
+      nodeId: event.nodeId,
+      timerId: event.id,
+      name: event.name,
+    });
     this.scenario.onTimer?.(event.nodeId, event, this.ctx);
   }
 
@@ -316,11 +557,7 @@ export class Simulation {
     });
   }
 
-  private pushLog(
-    kind: LogKind,
-    text: string,
-    meta?: Record<string, unknown>,
-  ): void {
+  private pushLog(kind: LogKind, text: string, meta?: Record<string, unknown>): void {
     this.logEntries.push({
       seq: this.logSeq++,
       timestamp: this.currentTime,
@@ -343,17 +580,20 @@ export class Simulation {
         sentAt: this.currentTime,
         deliverAt,
       };
-      this.pushLog(
-        "send",
-        `${from} sends ${payloadLabel(payload)} → ${to}`,
-        { messageId: id, payload, deliverAt },
-      );
+      this.pushLog("send", `${from} sends ${payloadLabel(payload)} → ${to}`, {
+        messageId: id,
+        from,
+        to,
+        payload,
+        deliverAt,
+      });
       if (this.isPartitioned(from, to)) {
-        this.pushLog(
-          "drop",
-          `dropped ${from} → ${to} ${payloadLabel(payload)} (partition)`,
-          { messageId: id, reason: "partition" },
-        );
+        this.pushLog("drop", `dropped ${from} → ${to} ${payloadLabel(payload)} (partition)`, {
+          messageId: id,
+          from,
+          to,
+          reason: "partition",
+        });
         return null;
       }
       this.messages.set(id, message);
@@ -385,9 +625,7 @@ export class Simulation {
     updateNodeState: (nodeId, updater) => {
       const node = this.requireNode(nodeId);
       node.state =
-        typeof updater === "function"
-          ? updater(node.state)
-          : { ...node.state, ...updater };
+        typeof updater === "function" ? updater(node.state) : { ...node.state, ...updater };
     },
     log: (text, meta) => {
       this.pushLog("info", text, meta);
@@ -401,7 +639,7 @@ export class Simulation {
       };
     },
     getNodes: () => this.nodes.map((n) => ({ ...n, state: n.state })),
-    random: () => this.rng(),
+    random: () => this.rng.random(),
     isRunning: (nodeId) => this.requireNode(nodeId).status === "running",
   };
 }
