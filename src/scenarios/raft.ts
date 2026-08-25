@@ -4,7 +4,6 @@ import { makeNodes } from "./helpers";
 const IDS = ["A", "B", "C"] as const;
 const TIMEOUTS: Record<string, number> = { A: 1500, B: 2000, C: 2500 };
 const HEARTBEAT = 400;
-const LATENCY = 80;
 const MAJORITY = 2;
 
 type Role = "FOLLOWER" | "CANDIDATE" | "LEADER";
@@ -105,7 +104,10 @@ function becomeLeader(ctx: ScenarioContext, nodeId: string) {
   });
   ctx.cancelTimers(nodeId, "election");
   ctx.cancelTimers(nodeId, "heartbeat");
-  ctx.log(`${nodeId} became LEADER for term ${raft(ctx.getNode(nodeId)).term}`);
+  ctx.log(`${nodeId} became LEADER for term ${raft(ctx.getNode(nodeId)).term}`, {
+    kind: "state",
+    nodeId,
+  });
   replicateAll(ctx, nodeId);
   ctx.setTimer(nodeId, HEARTBEAT, "heartbeat");
 }
@@ -133,7 +135,6 @@ function sendAppendEntries(ctx: ScenarioContext, from: string, to: string) {
       entries: s.log.slice(nextIndex),
       leaderCommit: s.commitIndex,
     },
-    LATENCY,
   );
 }
 
@@ -198,15 +199,7 @@ export const raftScenario: Scenario = {
       ctx.log("client request failed: no leader");
       return;
     }
-    let command = "";
-    write(ctx, leader.id, (s) => {
-      command = `SET x=${s.nextCommand}`;
-      s.nextCommand += 1;
-      s.log.push({ term: s.term, command });
-      s.matchIndex[leader.id] = lastIndex(s.log);
-    });
-    ctx.log(`client → ${leader.id}: ${command}`);
-    replicateAll(ctx, leader.id);
+    ctx.sendMessage("client", leader.id, { type: "ClientCommand" });
   },
   onMessage(nodeId, message, ctx) {
     const p = message.payload as Record<string, unknown>;
@@ -217,6 +210,10 @@ export const raftScenario: Scenario = {
       stepDown(ctx, nodeId, incomingTerm);
     }
 
+    if (p.type === "ClientCommand") {
+      applyClientCommand(nodeId, ctx);
+      return;
+    }
     if (p.type === "RequestVote") {
       handleRequestVote(nodeId, message.from, p, ctx);
       return;
@@ -275,7 +272,40 @@ export const raftScenario: Scenario = {
     }
     return lines;
   },
+  glanceNode(node) {
+    const s = raft(node);
+    if (s.role === "LEADER") {
+      const x = s.kv.x;
+      return [
+        "LEADER",
+        `Term ${s.term}`,
+        `Commit ${s.commitIndex < 0 ? "—" : s.commitIndex}`,
+        ...(x != null ? [`x = ${String(x)}`] : []),
+      ];
+    }
+    if (s.role === "CANDIDATE") {
+      return ["CANDIDATE", `Term ${s.term}`, `votes ${s.votes.length}`];
+    }
+    return ["FOLLOWER", `Term ${s.term}`, `Leader: ${s.leader ?? "—"}`];
+  },
 };
+
+function applyClientCommand(nodeId: string, ctx: ScenarioContext) {
+  const local = raft(ctx.getNode(nodeId));
+  if (local.role !== "LEADER") {
+    ctx.log(`client request ignored: ${nodeId} is not leader`, { nodeId });
+    return;
+  }
+  let command = "";
+  write(ctx, nodeId, (s) => {
+    command = `SET x=${s.nextCommand}`;
+    s.nextCommand += 1;
+    s.log.push({ term: s.term, command });
+    s.matchIndex[nodeId] = lastIndex(s.log);
+  });
+  ctx.log(`client → ${nodeId}: ${command}`, { nodeId, from: "client", to: nodeId });
+  replicateAll(ctx, nodeId);
+}
 
 function startElection(ctx: ScenarioContext, nodeId: string) {
   write(ctx, nodeId, (s) => {
@@ -286,7 +316,7 @@ function startElection(ctx: ScenarioContext, nodeId: string) {
     s.votes = [nodeId];
   });
   const s = raft(ctx.getNode(nodeId));
-  ctx.log(`${nodeId} → CANDIDATE term ${s.term}`);
+  ctx.log(`${nodeId} → CANDIDATE term ${s.term}`, { kind: "state", nodeId });
   resetElection(ctx, nodeId);
   ctx.cancelTimers(nodeId, "heartbeat");
   for (const to of IDS) {
@@ -301,7 +331,6 @@ function startElection(ctx: ScenarioContext, nodeId: string) {
         lastLogIndex: lastIndex(s.log),
         lastLogTerm: lastTerm(s.log),
       },
-      LATENCY,
     );
   }
   if (s.votes.length >= MAJORITY) becomeLeader(ctx, nodeId);
@@ -338,7 +367,6 @@ function handleRequestVote(
     nodeId,
     from,
     { type: "VoteResponse", term, granted },
-    LATENCY,
   );
 }
 
@@ -373,7 +401,6 @@ function handleAppendEntries(
       nodeId,
       from,
       { type: "AppendEntriesResponse", term: s.term, success: false, matchIndex: -1 },
-      LATENCY,
     );
     return;
   }
@@ -404,7 +431,6 @@ function handleAppendEntries(
           success: false,
           matchIndex: -1,
         },
-        LATENCY,
       );
       return;
     }
@@ -436,7 +462,6 @@ function handleAppendEntries(
       success: true,
       matchIndex: prevLogIndex + entries.length,
     },
-    LATENCY,
   );
 }
 

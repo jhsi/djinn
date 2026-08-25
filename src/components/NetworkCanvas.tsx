@@ -1,10 +1,12 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import type { Message, Node, Scenario, Snapshot } from "../simulation/types";
-import { payloadLabel } from "../simulation/format";
-import { colors, fonts } from "../ui/theme.stylex";
+import { CLIENT_ID } from "../simulation/types";
+import { latencyFor, payloadGlance } from "../simulation/format";
+import { colors } from "../ui/theme.stylex";
 import { useTheme } from "../ui/Theme";
 import { NodeCard } from "./NodeCard";
+import { ClientDock, EdgeActions, MessageActions } from "./CanvasActions";
 import { isPartitioned, type Selection } from "../ui/selection";
 
 type Pos = { id: string; x: number; y: number };
@@ -14,12 +16,36 @@ type Props = {
   scenario: Scenario;
   selection: Selection;
   onSelect: (selection: Selection) => void;
+  onCrash: (id: string) => void;
+  onRestart: (id: string) => void;
+  onPartition: (a: string, b: string) => void;
+  onHeal: (a: string, b: string) => void;
+  onLinkLatency: (a: string, b: string, ms: number) => void;
+  onDropNext: (a: string, b: string) => void;
+  onDropMessage: (id: string) => void;
+  onDelayMessage: (id: string, deliverAt: number) => void;
+  onClientSend: () => void;
 };
 
-export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props) {
+export function NetworkCanvas({
+  snapshot,
+  scenario,
+  selection,
+  onSelect,
+  onCrash,
+  onRestart,
+  onPartition,
+  onHeal,
+  onLinkLatency,
+  onDropNext,
+  onDropMessage,
+  onDelayMessage,
+  onClientSend,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const { palette } = useTheme();
+  const hasClient = Boolean(scenario.actions && scenario.actions.length > 0);
   const idKey = snapshot.nodes.map((n) => n.id).join(",");
   const nodeIds = idKey ? idKey.split(",") : [];
 
@@ -39,12 +65,34 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
     return () => observer.disconnect();
   }, []);
 
+  const clientPos: Pos = { id: CLIENT_ID, x: 78, y: size.height * 0.5 };
   const positions = useMemo(
-    () => (size.width > 1 && size.height > 1 ? layout(nodeIds, size.width, size.height) : []),
-    [idKey, size.height, size.width],
+    () =>
+      size.width > 1 && size.height > 1
+        ? layout(nodeIds, size.width, size.height, hasClient)
+        : [],
+    [idKey, size.height, size.width, hasClient],
   );
   const byId = new Map(positions.map((p) => [p.id, p]));
+  if (hasClient) byId.set(CLIENT_ID, clientPos);
   const maxX = maxNumericX(snapshot.nodes);
+  const leader = snapshot.nodes.find(
+    (n) =>
+      n.status === "running" &&
+      (n.state.role === "LEADER" || n.state.role === "PRIMARY" || n.state.role === "COORDINATOR"),
+  );
+
+  const selectedEdge =
+    selection?.kind === "edge"
+      ? { a: selection.a, b: selection.b, pos: midpoint(byId.get(selection.a), byId.get(selection.b)) }
+      : null;
+  const selectedMessage =
+    selection?.kind === "message"
+      ? snapshot.inFlight.find((m) => m.id === selection.id)
+      : undefined;
+  const selectedMessagePos = selectedMessage
+    ? messagePoint(selectedMessage, byId.get(selectedMessage.from), byId.get(selectedMessage.to), snapshot.currentTime)
+    : null;
 
   return (
     <div
@@ -52,7 +100,6 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
       {...stylex.props(styles.wrap)}
       onClick={() => onSelect(null)}
     >
-      <StatsOverlay snapshot={snapshot} />
       {size.width > 1 && size.height > 1 ? (
         <svg
           width={size.width}
@@ -61,6 +108,18 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
           preserveAspectRatio="none"
           {...stylex.props(styles.svg)}
         >
+          {hasClient && leader ? (
+            <line
+              x1={clientPos.x}
+              y1={clientPos.y}
+              x2={byId.get(leader.id)?.x ?? clientPos.x}
+              y2={byId.get(leader.id)?.y ?? clientPos.y}
+              stroke={palette.line}
+              strokeWidth={1}
+              strokeDasharray="3 5"
+              pointerEvents="none"
+            />
+          ) : null}
           {edges(nodeIds).map(([a, b]) => {
             const pa = byId.get(a);
             const pb = byId.get(b);
@@ -74,11 +133,15 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
               (m) =>
                 (m.from === a && m.to === b) || (m.from === b && m.to === a),
             );
+            const latency = latencyFor(snapshot.linkLatencies, a, b, snapshot.defaultLatency);
             const stroke = broken
               ? palette.coral
               : selected || busy
                 ? palette.lime
                 : palette.line;
+            const mx = (pa.x + pb.x) / 2;
+            const my = (pa.y + pb.y) / 2;
+            const label = broken ? "✕ PARTITIONED" : `${latency}ms`;
             return (
               <g key={`${a}-${b}`}>
                 <line
@@ -87,7 +150,7 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
                   x2={pb.x}
                   y2={pb.y}
                   stroke="transparent"
-                  strokeWidth={18}
+                  strokeWidth={22}
                   style={{ cursor: "pointer", pointerEvents: "stroke" }}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -100,19 +163,30 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
                   x2={pb.x}
                   y2={pb.y}
                   stroke={stroke}
-                  strokeWidth={selected ? 2.4 : busy ? 1.8 : 1.2}
+                  strokeWidth={selected ? 2.6 : busy ? 2 : 1.3}
                   strokeDasharray={broken ? "6 5" : undefined}
                   pointerEvents="none"
                 />
-                {broken ? (
-                  <circle
-                    cx={(pa.x + pb.x) / 2}
-                    cy={(pa.y + pb.y) / 2}
-                    r={5}
-                    fill={palette.coral}
-                    pointerEvents="none"
-                  />
-                ) : null}
+                <rect
+                  x={mx - 46}
+                  y={my - 9}
+                  width={92}
+                  height={16}
+                  rx={2}
+                  fill={palette.bg}
+                  pointerEvents="none"
+                />
+                <text
+                  x={mx}
+                  y={my + 4}
+                  textAnchor="middle"
+                  fill={broken ? palette.coral : selected || busy ? palette.lime : palette.muted}
+                  fontSize={11}
+                  fontFamily="IBM Plex Mono, monospace"
+                  pointerEvents="none"
+                >
+                  {label}
+                </text>
               </g>
             );
           })}
@@ -126,6 +200,7 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
               selected={selection?.kind === "message" && selection.id === message.id}
               ink={palette.ink}
               lime={palette.lime}
+              bg={palette.bg}
               onClick={() => onSelect({ kind: "message", id: message.id })}
             />
           ))}
@@ -146,11 +221,52 @@ export function NetworkCanvas({ snapshot, scenario, selection, onSelect }: Props
             y={pos.y}
             selected={selection?.kind === "node" && selection.id === node.id}
             scenario={scenario}
+            snapshot={snapshot}
             stale={stale}
             onClick={() => onSelect({ kind: "node", id: node.id })}
+            onCrash={() => onCrash(node.id)}
+            onRestart={() => onRestart(node.id)}
           />
         );
       })}
+      {hasClient && size.height > 1 ? (
+        <ClientDock
+          x={clientPos.x}
+          y={clientPos.y}
+          actionLabel={scenario.actions![0].label}
+          target={leader?.id ?? null}
+          onSend={onClientSend}
+        />
+      ) : null}
+      {selectedEdge?.pos ? (
+        <EdgeActions
+          x={selectedEdge.pos.x}
+          y={selectedEdge.pos.y}
+          a={selectedEdge.a}
+          b={selectedEdge.b}
+          latency={latencyFor(
+            snapshot.linkLatencies,
+            selectedEdge.a,
+            selectedEdge.b,
+            snapshot.defaultLatency,
+          )}
+          partitioned={isPartitioned(snapshot.partitions, selectedEdge.a, selectedEdge.b)}
+          onLatency={(ms) => onLinkLatency(selectedEdge.a, selectedEdge.b, ms)}
+          onDropNext={() => onDropNext(selectedEdge.a, selectedEdge.b)}
+          onPartition={() => onPartition(selectedEdge.a, selectedEdge.b)}
+          onHeal={() => onHeal(selectedEdge.a, selectedEdge.b)}
+        />
+      ) : null}
+      {selectedMessage && selectedMessagePos ? (
+        <MessageActions
+          x={selectedMessagePos.x}
+          y={selectedMessagePos.y}
+          message={selectedMessage}
+          now={snapshot.currentTime}
+          onDelay={() => onDelayMessage(selectedMessage.id, selectedMessage.deliverAt + 500)}
+          onDrop={() => onDropMessage(selectedMessage.id)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -163,6 +279,7 @@ function MessageMark({
   selected,
   ink,
   lime,
+  bg,
   onClick,
 }: {
   message: Message;
@@ -172,21 +289,20 @@ function MessageMark({
   selected: boolean;
   ink: string;
   lime: string;
+  bg: string;
   onClick: () => void;
 }) {
   const [hover, setHover] = useState(false);
   if (!from || !to) return null;
-  const span = Math.max(1, message.deliverAt - message.sentAt);
-  const t = clamp((now - message.sentAt) / span, 0.12, 0.88);
-  const x = from.x + (to.x - from.x) * t;
-  const y = from.y + (to.y - from.y) * t;
-  const label = payloadLabel(message.payload);
+  const point = messagePoint(message, from, to, now);
+  const glance = payloadGlance(message.payload);
+  const active = selected || hover;
   return (
     <g
       role="button"
       tabIndex={0}
-      aria-label={`${message.from} → ${message.to} ${label} deliver ${message.deliverAt}ms`}
-      style={{ cursor: "pointer" }}
+      aria-label={`${message.from} → ${message.to} ${glance.primary} deliver ${message.deliverAt}ms`}
+      style={{ cursor: "pointer", pointerEvents: "auto" }}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -201,70 +317,52 @@ function MessageMark({
       onMouseLeave={() => setHover(false)}
     >
       <circle
-        cx={x}
-        cy={y}
-        r={selected || hover ? 7 : 5.5}
+        cx={point.x}
+        cy={point.y}
+        r={active ? 8 : 6.5}
         fill={lime}
         stroke={ink}
-        strokeWidth={selected ? 2.5 : 1.5}
+        strokeWidth={selected ? 2.4 : 1.4}
+      />
+      <rect
+        x={point.x + 10}
+        y={point.y - (glance.secondary ? 22 : 12)}
+        width={Math.max(72, glance.primary.length * 7.2)}
+        height={glance.secondary ? 28 : 16}
+        fill={bg}
+        opacity={0.88}
+        pointerEvents="none"
       />
       <text
-        x={x + 10}
-        y={y - 10}
+        x={point.x + 14}
+        y={point.y - (glance.secondary ? 8 : 0)}
         fill={ink}
-        fontSize={10}
+        fontSize={11}
         fontFamily="IBM Plex Mono, monospace"
+        fontWeight={600}
+        pointerEvents="none"
       >
-        {label}
+        {glance.primary}
       </text>
+      {glance.secondary ? (
+        <text
+          x={point.x + 14}
+          y={point.y + 5}
+          fill={ink}
+          fontSize={10}
+          fontFamily="IBM Plex Mono, monospace"
+          opacity={0.7}
+          pointerEvents="none"
+        >
+          {glance.secondary}
+        </text>
+      ) : null}
     </g>
   );
 }
 
-function StatsOverlay({ snapshot }: { snapshot: Snapshot }) {
-  const running = snapshot.nodes.filter((n) => n.status === "running").length;
-  const health =
-    snapshot.partitions.length > 0 || running < snapshot.nodes.length
-      ? "DEGRADED"
-      : "OK";
-  return (
-    <div {...stylex.props(styles.stats)}>
-      <Stat label="TIME" value={`${Math.round(snapshot.currentTime)}ms`} />
-      <Stat label="NODES" value={`${running}/${snapshot.nodes.length}`} />
-      <Stat label="HEALTH" value={health} alert={health !== "OK"} />
-      <Stat label="IN FLIGHT" value={String(snapshot.inFlight.length)} />
-      <Stat label="PENDING" value={String(snapshot.pendingCount)} />
-      <Stat
-        label="PARTITIONS"
-        value={String(snapshot.partitions.length)}
-        alert={snapshot.partitions.length > 0}
-      />
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  alert,
-}: {
-  label: string;
-  value: string;
-  alert?: boolean;
-}) {
-  return (
-    <div {...stylex.props(styles.stat)}>
-      <span {...stylex.props(styles.statLabel)}>{label}</span>
-      <span {...stylex.props(styles.statValue)}>
-        <span {...stylex.props(styles.statDot, alert && styles.statDotAlert)} />
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function layout(ids: string[], width: number, height: number): Pos[] {
-  const padX = Math.min(140, Math.max(96, width * 0.14));
+function layout(ids: string[], width: number, height: number, client: boolean): Pos[] {
+  const padX = Math.min(140, Math.max(96, width * 0.14)) + (client ? 36 : 0);
   const padY = Math.min(120, Math.max(80, height * 0.16));
   const innerW = Math.max(1, width - padX * 2);
   const innerH = Math.max(1, height - padY * 2);
@@ -302,6 +400,22 @@ function edges(ids: string[]): [string, string][] {
   return out;
 }
 
+function midpoint(a?: Pos, b?: Pos): Pos | null {
+  if (!a || !b) return null;
+  return { id: `${a.id}-${b.id}`, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function messagePoint(message: Message, from?: Pos, to?: Pos, now = 0): Pos {
+  if (!from || !to) return { id: message.id, x: 0, y: 0 };
+  const span = Math.max(1, message.deliverAt - message.sentAt);
+  const t = clamp((now - message.sentAt) / span, 0.12, 0.88);
+  return {
+    id: message.id,
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+  };
+}
+
 function maxNumericX(nodes: Node[]): number | null {
   const xs = nodes
     .map((n) => n.state.x)
@@ -327,45 +441,5 @@ const styles = stylex.create({
     position: "absolute",
     left: 0,
     top: 0,
-  },
-  stats: {
-    position: "absolute",
-    top: 16,
-    left: 18,
-    zIndex: 2,
-    display: "flex",
-    flexDirection: "column",
-    gap: 6,
-    pointerEvents: "none",
-    fontFamily: fonts.mono,
-  },
-  stat: {
-    display: "flex",
-    gap: 12,
-    alignItems: "baseline",
-  },
-  statLabel: {
-    width: 86,
-    fontSize: 10,
-    letterSpacing: "0.14em",
-    color: colors.muted,
-  },
-  statValue: {
-    fontSize: 12,
-    color: colors.ink,
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    fontWeight: 500,
-  },
-  statDot: {
-    width: 6,
-    height: 6,
-    borderRadius: "50%",
-    backgroundColor: colors.lime,
-    display: "inline-block",
-  },
-  statDotAlert: {
-    backgroundColor: colors.coral,
   },
 });

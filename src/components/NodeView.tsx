@@ -2,21 +2,31 @@ import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../ui/theme.stylex";
 
 export const nodeStyles = stylex.create({
-  card: {
+  wrap: {
     position: "absolute",
-    width: 168,
     transform: "translate(-50%, -50%)",
+    zIndex: 2,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 6,
+  },
+  wrapSelected: {
+    zIndex: 4,
+  },
+  card: {
+    width: 168,
     backgroundColor: colors.white,
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: colors.faint,
-    padding: "10px 12px 12px 12px",
+    padding: "10px 12px 11px",
     cursor: "pointer",
     color: colors.ink,
     fontFamily: fonts.mono,
     boxSizing: "border-box",
     userSelect: "none",
-    zIndex: 1,
+    textAlign: "left",
   },
   selected: {
     borderColor: colors.lime,
@@ -27,13 +37,16 @@ export const nodeStyles = stylex.create({
   },
   stopped: {
     borderColor: colors.coral,
-    opacity: 0.7,
+    opacity: 0.78,
   },
   leader: {
     backgroundColor: colors.paleLime,
     borderLeftWidth: 3,
     borderLeftStyle: "solid",
     borderLeftColor: colors.lime,
+  },
+  candidate: {
+    borderColor: colors.lime,
   },
   stale: {
     backgroundColor: colors.paleCoral,
@@ -44,26 +57,35 @@ export const nodeStyles = stylex.create({
   informed: {
     backgroundColor: colors.paleLime,
   },
+  flashing: {
+    outlineWidth: 1,
+    outlineStyle: "solid",
+    outlineColor: colors.lime,
+    outlineOffset: 3,
+  },
   header: {
     display: "flex",
     alignItems: "baseline",
     justifyContent: "space-between",
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   id: {
-    fontSize: 13,
-    fontWeight: 600,
-    letterSpacing: "0.08em",
+    fontSize: 15,
+    fontWeight: 700,
+    letterSpacing: "0.06em",
     display: "flex",
     alignItems: "center",
     gap: 8,
   },
   status: {
-    fontSize: 9,
-    letterSpacing: "0.12em",
+    fontSize: 10,
+    letterSpacing: "0.1em",
     textTransform: "uppercase",
     color: colors.muted,
+  },
+  statusDown: {
+    color: colors.coral,
   },
   dot: {
     width: 7,
@@ -75,9 +97,15 @@ export const nodeStyles = stylex.create({
   dotStopped: {
     backgroundColor: colors.coral,
   },
+  role: {
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: "0.08em",
+    marginBottom: 2,
+  },
   line: {
-    fontSize: 11,
-    lineHeight: 1.45,
+    fontSize: 12,
+    lineHeight: 1.4,
     color: colors.ink,
     whiteSpace: "nowrap",
     overflow: "hidden",
@@ -85,5 +113,64 @@ export const nodeStyles = stylex.create({
   },
   muted: {
     color: colors.muted,
+  },
+  timer: {
+    marginTop: 8,
+  },
+  timerMeta: {
+    display: "flex",
+    justifyContent: "space-between",
+    fontSize: 10,
+    color: colors.muted,
+    marginBottom: 4,
+    letterSpacing: "0.04em",
+  },
+  timerTrack: {
+    height: 5,
+    backgroundColor: colors.faint,
+    overflow: "hidden",
+  },
+  timerFill: {
+    height: "100%",
+    backgroundColor: colors.lime,
+  },
+  timerUrgent: {
+    backgroundColor: colors.coral,
+  },
+  flash: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    color: colors.lime,
+    letterSpacing: "0.04em",
+    maxWidth: 168,
+    textAlign: "center",
+    lineHeight: 1.35,
+  },
+  actions: {
+    display: "flex",
+    gap: 6,
+  },
+  action: {
+    backgroundColor: colors.lime,
+    color: colors.charcoal,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.lime,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    padding: "4px 9px",
+    cursor: "pointer",
+    fontWeight: 600,
+  },
+  danger: {
+    backgroundColor: "transparent",
+    color: colors.coral,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.coral,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    padding: "4px 9px",
+    cursor: "pointer",
   },
 });

@@ -15,6 +15,7 @@ import type {
   TimerEvent,
   TimerInfo,
 } from "./types";
+import { DEFAULT_LINK_LATENCY } from "./types";
 
 type Checkpoint = {
   currentTime: number;
@@ -29,6 +30,9 @@ type Checkpoint = {
   timerCounter: number;
   logSeq: number;
   rngState: number;
+  defaultLatency: number;
+  linkLatencies: [string, number][];
+  pendingDrops: string[];
 };
 
 function cloneNode(node: Node): Node {
@@ -74,6 +78,9 @@ export class Simulation {
   private cursor = 0;
   private tapeLog: LogEntry[] = [];
   private exploredUntil = 0;
+  private defaultLatency = DEFAULT_LINK_LATENCY;
+  private linkLatencies = new Map<string, number>();
+  private pendingDrops = new Set<string>();
 
   currentTime = 0;
   status: SimStatus = "paused";
@@ -109,6 +116,18 @@ export class Simulation {
       state: { ...n.state },
     }));
     this.rng = new SeededRng(initial.seed ?? 1);
+    this.defaultLatency = initial.defaultLatency ?? DEFAULT_LINK_LATENCY;
+    this.linkLatencies.clear();
+    this.pendingDrops.clear();
+    const ids = this.nodes.map((n) => n.id);
+    for (let i = 0; i < ids.length; i += 1) {
+      for (let j = i + 1; j < ids.length; j += 1) {
+        this.linkLatencies.set(edgeKey(ids[i], ids[j]), this.defaultLatency);
+      }
+    }
+    for (const [a, b, ms] of initial.linkLatencies ?? []) {
+      this.linkLatencies.set(edgeKey(a, b), Math.max(0, ms));
+    }
     this.scenario.onStart(this.ctx);
   }
 
@@ -123,6 +142,9 @@ export class Simulation {
     this.msgCounter = 0;
     this.timerCounter = 0;
     this.logSeq = 0;
+    this.defaultLatency = DEFAULT_LINK_LATENCY;
+    this.linkLatencies.clear();
+    this.pendingDrops.clear();
     this.bootstrap();
     this.frames = [this.capture()];
     this.cursor = 0;
@@ -182,8 +204,8 @@ export class Simulation {
     }
 
     if (this.queue.peek()) {
-      if (target > this.currentTime) {
-        this.currentTime = target;
+      if (processed < maxEvents && target > this.currentTime) {
+        this.currentTime = Math.min(target, this.queue.peek()!.timestamp);
         this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
       }
     } else if (this.atTip()) {
@@ -298,6 +320,48 @@ export class Simulation {
     return true;
   }
 
+  setLinkLatency(a: string, b: string, ms: number): void {
+    const key = edgeKey(a, b);
+    const next = Math.max(0, Math.round(ms));
+    const previous = this.getLinkLatency(a, b);
+    if (previous === next && this.linkLatencies.get(key) === next) return;
+    this.branchIfNeeded();
+    this.linkLatencies.set(key, next);
+    const scale = previous <= 0 ? 1 : next / previous;
+    for (const message of this.messages.values()) {
+      if (edgeKey(message.from, message.to) !== key) continue;
+      const remaining = Math.max(0, message.deliverAt - this.currentTime);
+      const deliverAt = this.currentTime + Math.max(1, Math.round(remaining * scale));
+      message.deliverAt = deliverAt;
+      this.queue.remove((e) => e.type === "deliver" && e.messageId === message.id);
+      this.queue.schedule({
+        type: "deliver",
+        id: `deliver-${message.id}`,
+        timestamp: deliverAt,
+        messageId: message.id,
+      });
+    }
+    this.commitPhysics();
+    this.notify();
+  }
+
+  dropNextOnLink(a: string, b: string): boolean {
+    const key = edgeKey(a, b);
+    const candidates = [...this.messages.values()]
+      .filter((m) => edgeKey(m.from, m.to) === key)
+      .sort((x, y) => x.deliverAt - y.deliverAt);
+    if (candidates[0]) return this.dropMessage(candidates[0].id);
+    this.branchIfNeeded();
+    this.pendingDrops.add(key);
+    this.commitPhysics();
+    this.notify();
+    return true;
+  }
+
+  getLinkLatency(a: string, b: string): number {
+    return this.linkLatencies.get(edgeKey(a, b)) ?? this.defaultLatency;
+  }
+
   partition(a: string, b: string): void {
     const key = edgeKey(a, b);
     if (this.partitions.has(key)) return;
@@ -362,7 +426,7 @@ export class Simulation {
     from: string,
     to: string,
     payload: unknown,
-    latency: number,
+    latency?: number,
   ): string | null {
     this.branchIfNeeded();
     const id = this.ctx.sendMessage(from, to, payload, latency);
@@ -400,6 +464,9 @@ export class Simulation {
       timerCounter: this.timerCounter,
       logSeq: this.logSeq,
       rngState: this.rng.getState(),
+      defaultLatency: this.defaultLatency,
+      linkLatencies: [...this.linkLatencies.entries()],
+      pendingDrops: [...this.pendingDrops],
     };
   }
 
@@ -416,6 +483,9 @@ export class Simulation {
     this.timerCounter = frame.timerCounter;
     this.logSeq = frame.logSeq;
     this.rng.setState(frame.rngState);
+    this.defaultLatency = frame.defaultLatency;
+    this.linkLatencies = new Map(frame.linkLatencies);
+    this.pendingDrops = new Set(frame.pendingDrops);
     this.cursor = index;
   }
 
@@ -431,6 +501,17 @@ export class Simulation {
     this.cursor = this.frames.length - 1;
     this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
     this.tapeLog = this.logEntries.map(cloneLog);
+  }
+
+  private commitPhysics(): void {
+    const last = this.frames[this.cursor];
+    if (this.atTip() && last && last.currentTime === this.currentTime) {
+      this.frames[this.cursor] = this.capture();
+      this.tapeLog = this.logEntries.map(cloneLog);
+      this.exploredUntil = Math.max(this.exploredUntil, this.currentTime);
+      return;
+    }
+    this.recordFrame();
   }
 
   private executeNext(): SimulationEvent | null {
@@ -473,6 +554,11 @@ export class Simulation {
       duration: Math.max(horizon + pad, 500),
       exploredUntil: this.exploredUntil,
       partitions: [...this.partitions].map(parseEdgeKey),
+      linkLatencies: [...this.linkLatencies.entries()].map(([key, ms]) => {
+        const [a, b] = parseEdgeKey(key);
+        return [a, b, ms];
+      }),
+      defaultLatency: this.defaultLatency,
       nextEvent: pending[0] ? cloneEvent(pending[0]) : null,
       pendingCount: pending.length,
       timers: [...this.timers.values()].map(cloneTimer),
@@ -516,7 +602,7 @@ export class Simulation {
       return;
     }
 
-    this.pushLog("deliver", `${message.to} receives ${payloadLabel(message.payload)} from ${message.from}`, {
+    this.pushLog("deliver", `${message.to} ← ${payloadLabel(message.payload)}  (${message.from})`, {
       messageId,
       from: message.from,
       to: message.to,
@@ -529,7 +615,7 @@ export class Simulation {
     this.timers.delete(event.id);
     const node = this.requireNode(event.nodeId);
     if (node.status === "stopped") return;
-    this.pushLog("timer", `${event.nodeId} timer ${event.name}`, {
+    this.pushLog("timer", `${event.nodeId} ${event.name} timeout`, {
       nodeId: event.nodeId,
       timerId: event.id,
       name: event.name,
@@ -571,7 +657,8 @@ export class Simulation {
     now: () => this.currentTime,
     sendMessage: (from, to, payload, latency) => {
       const id = `m${++this.msgCounter}`;
-      const deliverAt = this.currentTime + Math.max(0, latency);
+      const hop = latency ?? this.getLinkLatency(from, to);
+      const deliverAt = this.currentTime + Math.max(0, hop);
       const message: Message = {
         id,
         from,
@@ -580,13 +667,24 @@ export class Simulation {
         sentAt: this.currentTime,
         deliverAt,
       };
-      this.pushLog("send", `${from} sends ${payloadLabel(payload)} → ${to}`, {
+      this.pushLog("send", `${from} → ${to}  ${payloadLabel(payload)}`, {
         messageId: id,
         from,
         to,
         payload,
         deliverAt,
       });
+      const key = edgeKey(from, to);
+      if (this.pendingDrops.has(key)) {
+        this.pendingDrops.delete(key);
+        this.pushLog("drop", `dropped ${from} → ${to} ${payloadLabel(payload)} (link)`, {
+          messageId: id,
+          from,
+          to,
+          reason: "drop-next",
+        });
+        return null;
+      }
       if (this.isPartitioned(from, to)) {
         this.pushLog("drop", `dropped ${from} → ${to} ${payloadLabel(payload)} (partition)`, {
           messageId: id,
@@ -605,10 +703,11 @@ export class Simulation {
       });
       return id;
     },
+    linkLatency: (a, b) => this.getLinkLatency(a, b),
     setTimer: (nodeId, delay, name, data) => {
       const id = `t${++this.timerCounter}`;
       const fireAt = this.currentTime + Math.max(0, delay);
-      this.timers.set(id, { id, nodeId, name, fireAt, data });
+      this.timers.set(id, { id, nodeId, name, fireAt, setAt: this.currentTime, data });
       this.queue.schedule({
         type: "timer",
         id,
@@ -628,7 +727,8 @@ export class Simulation {
         typeof updater === "function" ? updater(node.state) : { ...node.state, ...updater };
     },
     log: (text, meta) => {
-      this.pushLog("info", text, meta);
+      const kind: LogKind = meta?.kind === "state" ? "state" : "info";
+      this.pushLog(kind, text, meta);
     },
     getNode: (nodeId) => {
       const node = this.requireNode(nodeId);

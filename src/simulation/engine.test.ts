@@ -260,7 +260,7 @@ describe("Playback seek", () => {
 
     const deliverB = sim
       .snapshot()
-      .tapeLog.find((e) => e.kind === "deliver" && e.text.includes("B receives"));
+      .tapeLog.find((e) => e.kind === "deliver" && e.text.includes("B ←"));
     expect(deliverB).toBeTruthy();
     sim.seekToLog(deliverB!.seq);
     expect(sim.currentTime).toBe(500);
@@ -297,7 +297,7 @@ describe("Playback seek", () => {
     sim.invokeAction("set-x-5");
     sim.step();
     sim.step();
-    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C receives"))).toBe(
+    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C ←"))).toBe(
       true,
     );
 
@@ -307,7 +307,7 @@ describe("Playback seek", () => {
     expect(toC).toBeTruthy();
     sim.dropMessage(toC!.id);
 
-    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C receives"))).toBe(
+    expect(sim.snapshot().tapeLog.some((e) => e.kind === "deliver" && e.text.includes("C ←"))).toBe(
       false,
     );
     while (sim.step()) {
@@ -328,5 +328,48 @@ describe("Playback seek", () => {
     sim.advanceBy(5000);
     expect(sim.snapshot().tapeLog.map((e) => `${e.seq}:${e.kind}:${e.text}`)).toEqual(recorded);
     expect(xOf(sim, "C")).toBe(5);
+  });
+});
+
+describe("Link physics", () => {
+  const physics: Scenario = {
+    id: "physics",
+    name: "physics",
+    description: "",
+    createInitialState: () => ({
+      nodes: makeNodes(["A", "B"]),
+      defaultLatency: 100,
+    }),
+    onStart(ctx) {
+      ctx.sendMessage("A", "B", { type: "PING" });
+    },
+    onMessage() {},
+  };
+
+  it("uses the link latency when send omits an override", () => {
+    const sim = new Simulation(physics);
+    expect(sim.snapshot().inFlight[0].deliverAt).toBe(100);
+    expect(sim.getLinkLatency("A", "B")).toBe(100);
+  });
+
+  it("rescales in-flight remaining time when latency changes", () => {
+    const sim = new Simulation(physics);
+    sim.setLinkLatency("A", "B", 400);
+    expect(sim.snapshot().inFlight[0].deliverAt).toBe(400);
+  });
+
+  it("applies updated latency to subsequent sends", () => {
+    const sim = new Simulation(physics);
+    sim.dropMessage(sim.snapshot().inFlight[0].id);
+    sim.setLinkLatency("A", "B", 2500);
+    sim.injectMessage("A", "B", { type: "PING" });
+    expect(sim.snapshot().inFlight[0].deliverAt).toBe(2500);
+  });
+
+  it("dropNextOnLink drops the next message on that edge", () => {
+    const sim = new Simulation(physics);
+    expect(sim.dropNextOnLink("A", "B")).toBe(true);
+    expect(sim.snapshot().inFlight).toHaveLength(0);
+    expect(sim.snapshot().eventLog.some((e) => e.kind === "drop")).toBe(true);
   });
 });

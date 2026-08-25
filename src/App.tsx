@@ -11,12 +11,11 @@ import { NetworkCanvas } from "./components/NetworkCanvas";
 import { EventTimeline } from "./components/EventTimeline";
 import { Inspector } from "./components/Inspector";
 import { SimulationControls } from "./components/SimulationControls";
-import { PerturbationControls } from "./components/PerturbationControls";
 
 export default function App() {
   const { theme, palette, toggleTheme } = useTheme();
-  const [scenarioId, setScenarioId] = useState("ping-pong");
-  const [sim, setSim] = useState(() => new Simulation(getScenario("ping-pong")));
+  const [scenarioId, setScenarioId] = useState("raft");
+  const [sim, setSim] = useState(() => new Simulation(getScenario("raft")));
   const [selection, setSelection] = useState<Selection>(null);
   const subscribe = useCallback(
     (onStoreChange: () => void) => sim.subscribe(onStoreChange),
@@ -34,7 +33,7 @@ export default function App() {
     let raf = 0;
     let last = performance.now();
     const loop = (now: number) => {
-      const dt = now - last;
+      const dt = Math.min(48, now - last);
       last = now;
       const maxEvents = snapshot.speed >= 32 ? 10 : 40;
       sim.advanceBy(dt * snapshot.speed, maxEvents);
@@ -78,6 +77,12 @@ export default function App() {
     setSelection(null);
   }
 
+  const running = snapshot.nodes.filter((n) => n.status === "running").length;
+  const partitions =
+    snapshot.partitions.length === 0
+      ? "no partitions"
+      : `${snapshot.partitions.length} partition${snapshot.partitions.length === 1 ? "" : "s"}`;
+
   return (
     <div {...stylex.props(theme === "light" && lightTheme, styles.shell)}>
       <header {...stylex.props(styles.top)}>
@@ -89,29 +94,38 @@ export default function App() {
             aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
             {...stylex.props(styles.logoBtn)}
           >
-            <Logo size={32} crescent={palette.ink} />
+            <Logo size={28} crescent={palette.ink} />
           </button>
-          <div>
-            <div {...stylex.props(styles.wordmark)}>Druid</div>
-            <div {...stylex.props(styles.tag)}>
-              deterministic distributed systems sandbox
-            </div>
-          </div>
+          <div {...stylex.props(styles.wordmark)}>Druid</div>
+          <label {...stylex.props(styles.scenario)} title={scenario.description}>
+            <select
+              value={scenarioId}
+              onChange={(e) => loadScenario(e.target.value)}
+              {...stylex.props(styles.select)}
+            >
+              {SCENARIOS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
-        <label {...stylex.props(styles.scenario)}>
-          <span>SCENARIO</span>
-          <select
-            value={scenarioId}
-            onChange={(e) => loadScenario(e.target.value)}
-            {...stylex.props(styles.select)}
-          >
-            {SCENARIOS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div {...stylex.props(styles.status)}>
+          <span {...stylex.props(styles.time)}>{Math.round(snapshot.currentTime)}ms</span>
+          <span {...stylex.props(styles.dot)}>·</span>
+          <span>
+            {running}/{snapshot.nodes.length} nodes
+          </span>
+          <span {...stylex.props(styles.dot)}>·</span>
+          <span>{snapshot.inFlight.length} in flight</span>
+          <span {...stylex.props(styles.dot)}>·</span>
+          <span>{snapshot.pendingCount} pending</span>
+          <span {...stylex.props(styles.dot)}>·</span>
+          <span {...stylex.props(snapshot.partitions.length > 0 && styles.alert)}>
+            {partitions}
+          </span>
+        </div>
         <SimulationControls
           status={snapshot.status}
           speed={snapshot.speed}
@@ -130,47 +144,33 @@ export default function App() {
           onSpeed={(speed: PlaybackSpeed) => sim.setSpeed(speed)}
         />
       </header>
-      <p {...stylex.props(styles.desc)}>{scenario.description}</p>
-      {scenario.actions && scenario.actions.length > 0 ? (
-        <div {...stylex.props(styles.actions)}>
-          {scenario.actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              onClick={() => sim.invokeAction(action.id)}
-              {...stylex.props(styles.action)}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       <div {...stylex.props(styles.main)}>
         <NetworkCanvas
           snapshot={snapshot}
           scenario={scenario}
           selection={selection}
           onSelect={setSelection}
+          onCrash={(id) => sim.crashNode(id)}
+          onRestart={(id) => sim.restartNode(id)}
+          onPartition={(a, b) => sim.partition(a, b)}
+          onHeal={(a, b) => sim.healPartition(a, b)}
+          onLinkLatency={(a, b, ms) => sim.setLinkLatency(a, b, ms)}
+          onDropNext={(a, b) => {
+            sim.dropNextOnLink(a, b);
+            if (selection?.kind === "message") setSelection(null);
+          }}
+          onDropMessage={(id) => {
+            sim.dropMessage(id);
+            setSelection(null);
+          }}
+          onDelayMessage={(id, ts) => sim.delayMessage(id, ts)}
+          onClientSend={() => {
+            const action = scenario.actions?.[0];
+            if (action) sim.invokeAction(action.id);
+          }}
         />
         <aside {...stylex.props(styles.side)}>
-          <Inspector
-            snapshot={snapshot}
-            scenario={scenario}
-            selection={selection}
-          />
-          <PerturbationControls
-            snapshot={snapshot}
-            selection={selection}
-            onDelay={(id, ts) => sim.delayMessage(id, ts)}
-            onDrop={(id) => {
-              sim.dropMessage(id);
-              setSelection(null);
-            }}
-            onPartition={(a, b) => sim.partition(a, b)}
-            onHeal={(a, b) => sim.healPartition(a, b)}
-            onCrash={(id) => sim.crashNode(id)}
-            onRestart={(id) => sim.restartNode(id)}
-          />
+          <Inspector snapshot={snapshot} scenario={scenario} selection={selection} />
         </aside>
       </div>
       <EventTimeline
@@ -217,9 +217,8 @@ const styles = stylex.create({
     zIndex: 1,
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 24,
-    padding: "14px 18px 8px",
+    gap: 16,
+    padding: "10px 16px",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.faint,
@@ -228,80 +227,54 @@ const styles = stylex.create({
   brand: {
     display: "flex",
     alignItems: "center",
-    gap: 12,
-    minWidth: 240,
+    gap: 10,
+    flexShrink: 0,
   },
   wordmark: {
     fontFamily: fonts.display,
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: 800,
-    lineHeight: 1,
     letterSpacing: "-0.03em",
-  },
-  tag: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    color: colors.muted,
-    marginTop: 4,
-    letterSpacing: "0.02em",
   },
   scenario: {
     display: "flex",
-    flexDirection: "column",
-    gap: 4,
     fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: "0.14em",
-    color: colors.muted,
-    flex: 1,
+    fontSize: 12,
   },
   select: {
     fontFamily: fonts.mono,
-    fontSize: 13,
+    fontSize: 12,
     color: colors.ink,
     backgroundColor: colors.white,
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: colors.faint,
-    padding: "6px 8px",
-    letterSpacing: 0,
-    minWidth: 240,
+    padding: "4px 8px",
+    maxWidth: 160,
   },
-  desc: {
-    position: "relative",
-    zIndex: 1,
-    margin: 0,
-    padding: "8px 18px",
+  status: {
+    flex: 1,
+    display: "flex",
+    alignItems: "baseline",
+    gap: 8,
     fontFamily: fonts.mono,
     fontSize: 12,
     color: colors.muted,
-    backgroundColor: colors.bg,
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.faint,
+    minWidth: 0,
+    overflow: "hidden",
   },
-  actions: {
-    position: "relative",
-    zIndex: 1,
-    display: "flex",
-    gap: 8,
-    padding: "8px 18px",
-    backgroundColor: colors.bg,
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.faint,
-  },
-  action: {
-    backgroundColor: colors.lime,
-    color: colors.charcoal,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: colors.lime,
-    fontFamily: fonts.mono,
-    fontSize: 12,
-    padding: "6px 12px",
-    cursor: "pointer",
+  time: {
+    fontSize: 18,
     fontWeight: 600,
+    color: colors.ink,
+    fontVariantNumeric: "tabular-nums",
+    letterSpacing: "-0.02em",
+  },
+  dot: {
+    color: colors.faint,
+  },
+  alert: {
+    color: colors.coral,
   },
   main: {
     position: "relative",
@@ -309,7 +282,7 @@ const styles = stylex.create({
     flex: "1 1 auto",
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "1fr 400px",
+    gridTemplateColumns: "1fr 340px",
   },
   side: {
     display: "flex",

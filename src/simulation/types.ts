@@ -8,6 +8,10 @@ export type Node = {
   state: Record<string, unknown>;
 };
 
+export const CLIENT_ID = "client";
+
+export const DEFAULT_LINK_LATENCY = 100;
+
 export type Message = {
   id: string;
   from: string;
@@ -47,7 +51,8 @@ export type LogKind =
   | "restart"
   | "partition"
   | "heal"
-  | "info";
+  | "info"
+  | "state";
 
 export type LogEntry = {
   seq: number;
@@ -62,6 +67,7 @@ export type TimerInfo = {
   nodeId: string;
   name: string;
   fireAt: number;
+  setAt: number;
   data?: unknown;
 };
 
@@ -79,6 +85,8 @@ export type Snapshot = {
   duration: number;
   exploredUntil: number;
   partitions: [string, string][];
+  linkLatencies: [string, string, number][];
+  defaultLatency: number;
   nextEvent: SimulationEvent | null;
   pendingCount: number;
   timers: TimerInfo[];
@@ -90,8 +98,9 @@ export type ScenarioContext = {
     from: string,
     to: string,
     payload: unknown,
-    latency: number,
+    latency?: number,
   ) => string | null;
+  linkLatency: (a: string, b: string) => number;
   setTimer: (
     nodeId: string,
     delay: number,
@@ -115,6 +124,8 @@ export type ScenarioContext = {
 export type InitialState = {
   nodes: Node[];
   seed?: number;
+  defaultLatency?: number;
+  linkLatencies?: [string, string, number][];
 };
 
 export type ScenarioAction = {
@@ -135,4 +146,5 @@ export type Scenario = {
   onRestart?: (nodeId: string, ctx: ScenarioContext) => void;
   onAction?: (actionId: string, ctx: ScenarioContext) => void;
   summarizeNode?: (node: Node) => string[];
+  glanceNode?: (node: Node) => string[];
 };

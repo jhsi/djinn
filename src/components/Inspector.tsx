@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import type { Scenario, Snapshot } from "../simulation/types";
-import { formatTime, payloadLabel } from "../simulation/format";
+import { formatTime, latencyFor, payloadLabel } from "../simulation/format";
 import { colors, fonts } from "../ui/theme.stylex";
 import { describeEvent, eventKey, type Selection } from "../ui/selection";
 
@@ -76,8 +76,12 @@ function render(snapshot: Snapshot, scenario: Scenario, selection: Selection) {
         (a === selection.b && b === selection.a),
     );
     return (
-      <Block title={`LINK ${selection.a} ↔ ${selection.b}`}>
-        <KV label="status" value={broken ? "PARTITIONED" : "connected"} />
+      <Block title={`${selection.a} ↔ ${selection.b}`}>
+        <KV
+          label="latency"
+          value={`${latencyFor(snapshot.linkLatencies, selection.a, selection.b, snapshot.defaultLatency)}ms`}
+        />
+        <KV label="partitioned" value={broken ? "true" : "false"} />
         <KV
           label="in flight"
           value={String(
@@ -143,7 +147,7 @@ function render(snapshot: Snapshot, scenario: Scenario, selection: Selection) {
         }
       />
       <div {...stylex.props(styles.hint)}>
-        Select a node, in-flight message, or link. Click a trace row to seek to that moment.
+        Select a node, link, or message on the canvas. Actions happen there; this panel shows full state.
       </div>
     </Block>
   );
@@ -195,7 +199,7 @@ const styles = stylex.create({
     padding: 12,
     overflow: "auto",
     fontFamily: fonts.mono,
-    fontSize: 12,
+    fontSize: 13,
     color: colors.ink,
   },
   title: {

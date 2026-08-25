@@ -39,4 +39,7 @@ export const replication: Scenario = {
   summarizeNode(node) {
     return [String(node.state.role), `x = ${String(node.state.x)}`];
   },
+  glanceNode(node) {
+    return [String(node.state.role), `x = ${String(node.state.x)}`];
+  },
 };
