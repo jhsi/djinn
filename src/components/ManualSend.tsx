@@ -135,8 +135,8 @@ const styles = stylex.create({
   input: {
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.ink,
-    backgroundColor: colors.white,
+    borderColor: colors.faint,
+    backgroundColor: colors.bg,
     fontFamily: fonts.mono,
     fontSize: 12,
     padding: "5px 8px",
@@ -145,10 +145,10 @@ const styles = stylex.create({
   send: {
     gridColumn: "1 / -1",
     backgroundColor: colors.lime,
-    color: colors.ink,
+    color: colors.charcoal,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.ink,
+    borderColor: colors.lime,
     fontFamily: fonts.mono,
     fontSize: 12,
     padding: "7px 10px",

@@ -179,7 +179,7 @@ const styles = stylex.create({
     flex: "1 1 0",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: colors.ink,
+    borderBottomColor: colors.faint,
   },
   head: {
     padding: "8px 12px",

@@ -3,8 +3,9 @@ import * as stylex from "@stylexjs/stylex";
 import { Simulation } from "./simulation/Simulation";
 import { SCENARIOS, getScenario } from "./scenarios";
 import type { PlaybackSpeed } from "./simulation/types";
-import { colors, fonts } from "./ui/theme.stylex";
+import { colors, fonts, lightTheme } from "./ui/theme.stylex";
 import { Logo } from "./ui/Logo";
+import { useTheme } from "./ui/Theme";
 import type { Selection } from "./ui/selection";
 import { NetworkCanvas } from "./components/NetworkCanvas";
 import { EventTimeline } from "./components/EventTimeline";
@@ -14,6 +15,7 @@ import { PerturbationControls } from "./components/PerturbationControls";
 import { ManualSend } from "./components/ManualSend";
 
 export default function App() {
+  const { theme, palette, toggleTheme } = useTheme();
   const [scenarioId, setScenarioId] = useState("ping-pong");
   const [sim, setSim] = useState(() => new Simulation(getScenario("ping-pong")));
   const [selection, setSelection] = useState<Selection>(null);
@@ -68,12 +70,18 @@ export default function App() {
   }
 
   return (
-    <div {...stylex.props(styles.shell)}>
-      <div {...stylex.props(styles.orbLime)} />
-      <div {...stylex.props(styles.orbInk)} />
+    <div {...stylex.props(theme === "light" && lightTheme, styles.shell)}>
       <header {...stylex.props(styles.top)}>
         <div {...stylex.props(styles.brand)}>
-          <Logo size={32} />
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            {...stylex.props(styles.logoBtn)}
+          >
+            <Logo size={32} crescent={palette.ink} />
+          </button>
           <div>
             <div {...stylex.props(styles.wordmark)}>Druid</div>
             <div {...stylex.props(styles.tag)}>
@@ -181,29 +189,15 @@ const styles = stylex.create({
     color: colors.ink,
     overflow: "hidden",
   },
-  orbLime: {
-    position: "absolute",
-    width: 280,
-    height: 280,
-    borderRadius: "50%",
-    backgroundColor: colors.lime,
-    left: -90,
-    bottom: -140,
-    pointerEvents: "none",
-    zIndex: 0,
-    opacity: 0.35,
-  },
-  orbInk: {
-    position: "absolute",
-    width: 340,
-    height: 340,
-    borderRadius: "50%",
-    backgroundColor: colors.ink,
-    right: -180,
-    top: -200,
-    pointerEvents: "none",
-    zIndex: 0,
-    opacity: 0.92,
+  logoBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0,
+    margin: 0,
+    borderWidth: 0,
+    backgroundColor: "transparent",
+    cursor: "pointer",
   },
   top: {
     position: "relative",
@@ -215,7 +209,7 @@ const styles = stylex.create({
     padding: "14px 18px 8px",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
-    borderBottomColor: colors.ink,
+    borderBottomColor: colors.faint,
     backgroundColor: colors.bg,
   },
   brand: {
@@ -255,7 +249,7 @@ const styles = stylex.create({
     backgroundColor: colors.white,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.ink,
+    borderColor: colors.faint,
     padding: "6px 8px",
     letterSpacing: 0,
     minWidth: 240,
@@ -286,10 +280,10 @@ const styles = stylex.create({
   },
   action: {
     backgroundColor: colors.lime,
-    color: colors.ink,
+    color: colors.charcoal,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.ink,
+    borderColor: colors.lime,
     fontFamily: fonts.mono,
     fontSize: 12,
     padding: "6px 12px",
@@ -310,8 +304,8 @@ const styles = stylex.create({
     minHeight: 0,
     borderLeftWidth: 1,
     borderLeftStyle: "solid",
-    borderLeftColor: colors.ink,
-    backgroundColor: colors.bg,
+    borderLeftColor: colors.faint,
+    backgroundColor: colors.white,
     overflow: "auto",
   },
 });
