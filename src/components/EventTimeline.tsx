@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import * as stylex from "@stylexjs/stylex";
-import type { LogEntry, LogKind, SimulationEvent, Snapshot } from "../simulation/types";
+import type { LogEntry, SimulationEvent, Snapshot } from "../simulation/types";
 import { formatTime } from "../simulation/format";
 import { colors, fonts } from "../ui/theme.stylex";
-import { describeEvent, eventKey, type Selection } from "../ui/selection";
+import { eventKey, eventParts, formatLogRow, type Selection } from "../ui/selection";
 import { PlaybackRuler } from "./PlaybackRuler";
 
 type Props = {
@@ -28,12 +28,11 @@ export function EventTimeline({
   }, [snapshot.playheadLogSeq, snapshot.currentTime]);
 
   const pending = snapshot.atTip ? snapshot.pendingEvents : [];
-  const groups = groupByTime(snapshot.tapeLog);
 
   return (
     <section {...stylex.props(styles.wrap)}>
       <header {...stylex.props(styles.head)}>
-        <span>SYSTEM TRACE</span>
+        <span>System trace</span>
         <span {...stylex.props(styles.meta)}>
           {snapshot.atTip
             ? `next ${snapshot.nextEvent ? formatTime(snapshot.nextEvent.timestamp) : "—"}  ·  ${snapshot.pendingCount} pending`
@@ -42,44 +41,39 @@ export function EventTimeline({
       </header>
       <PlaybackRuler snapshot={snapshot} onSeek={onSeekTime} />
       <div {...stylex.props(styles.list)}>
-        {groups.map((group) => (
-          <div key={group[0].seq} {...stylex.props(styles.cluster)}>
-            <div {...stylex.props(styles.stamp)}>{formatTime(group[0].timestamp)}</div>
-            <div {...stylex.props(styles.events)}>
-              {group.map((entry, i) => {
-                const key = `log:${entry.seq}`;
-                const selected = selection?.kind === "event" && selection.key === key;
-                const current = entry.seq === snapshot.playheadLogSeq;
-                const ahead = entry.seq > snapshot.playheadLogSeq;
-                const child = i > 0 && isChildKind(entry.kind, group[0].kind);
-                return (
-                  <button
-                    type="button"
-                    key={key}
-                    ref={current ? currentRef : undefined}
-                    onClick={() => onSeekLog(entry)}
-                    {...stylex.props(
-                      styles.row,
-                      ahead ? styles.ahead : styles.done,
-                      current && styles.current,
-                      selected && styles.selected,
-                      child && styles.child,
-                    )}
-                  >
-                    <span {...stylex.props(styles.kind, kindStyle(entry.kind))}>
-                      {kindLabel(entry.kind)}
-                    </span>
-                    <span {...stylex.props(styles.text)}>{entry.text}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+        {snapshot.tapeLog.map((entry) => {
+          const key = `log:${entry.seq}`;
+          const selected = selection?.kind === "event" && selection.key === key;
+          const current = entry.seq === snapshot.playheadLogSeq;
+          const ahead = entry.seq > snapshot.playheadLogSeq;
+          const row = formatLogRow(entry);
+          return (
+            <button
+              type="button"
+              key={key}
+              ref={current ? currentRef : undefined}
+              onClick={() => onSeekLog(entry)}
+              {...stylex.props(
+                styles.row,
+                ahead ? styles.ahead : styles.done,
+                current && styles.current,
+                selected && styles.selected,
+              )}
+            >
+              <span {...stylex.props(styles.stamp)}>{formatTime(entry.timestamp)}</span>
+              <span {...stylex.props(styles.kind, kindStyle(entry.kind))}>
+                {row.kind}
+              </span>
+              <span {...stylex.props(styles.actor)}>{row.actor}</span>
+              <span {...stylex.props(styles.text)}>{row.text}</span>
+            </button>
+          );
+        })}
         {pending.map((event, i) => {
           const key = eventKey(event);
           const isNext = i === 0;
           const selected = selection?.kind === "event" && selection.key === key;
+          const parts = eventParts(event, snapshot.inFlight);
           return (
             <button
               type="button"
@@ -88,18 +82,16 @@ export function EventTimeline({
               onClick={() => onSeekPending(event)}
               {...stylex.props(
                 styles.row,
-                styles.pendingRow,
                 isNext ? styles.next : styles.future,
                 selected && styles.selected,
               )}
             >
-              <span {...stylex.props(styles.stampInline)}>{formatTime(event.timestamp)}</span>
+              <span {...stylex.props(styles.stamp)}>{formatTime(event.timestamp)}</span>
               <span {...stylex.props(styles.kind, isNext ? styles.kindNext : styles.kindFuture)}>
-                {isNext ? "next" : "queued"}
+                {isNext ? "NEXT" : "queued"}
               </span>
-              <span {...stylex.props(styles.text)}>
-                {describeEvent(event, snapshot.inFlight)}
-              </span>
+              <span {...stylex.props(styles.actor)}>{parts.actor}</span>
+              <span {...stylex.props(styles.text)}>{parts.text}</span>
             </button>
           );
         })}
@@ -111,57 +103,12 @@ export function EventTimeline({
   );
 }
 
-function groupByTime(entries: LogEntry[]): LogEntry[][] {
-  const groups: LogEntry[][] = [];
-  for (const entry of entries) {
-    const last = groups[groups.length - 1];
-    if (last && last[0].timestamp === entry.timestamp) last.push(entry);
-    else groups.push([entry]);
-  }
-  return groups;
-}
-
-function isChildKind(kind: LogKind, head: LogKind): boolean {
-  if (head === "timer" || head === "state" || head === "info") {
-    return kind === "send" || kind === "deliver";
-  }
-  return kind === "send" && head !== "send";
-}
-
-function kindLabel(kind: LogKind): string {
-  switch (kind) {
-    case "timer":
-      return "timeout";
-    case "send":
-      return "send";
-    case "deliver":
-      return "recv";
-    case "state":
-      return "state";
-    case "drop":
-      return "drop";
-    case "crash":
-      return "crash";
-    case "restart":
-      return "restart";
-    case "partition":
-      return "part";
-    case "heal":
-      return "heal";
-    case "delay":
-      return "delay";
-    default:
-      return "note";
-  }
-}
-
 function kindStyle(kind: string) {
   if (kind === "drop" || kind === "crash" || kind === "partition") return styles.kindAlert;
   if (kind === "deliver" || kind === "heal" || kind === "restart" || kind === "state") {
     return styles.kindOk;
   }
   if (kind === "timer") return styles.kindTimer;
-  if (kind === "send") return styles.kindSend;
   return styles.kindDefault;
 }
 
@@ -174,26 +121,23 @@ const styles = stylex.create({
     borderTopWidth: 1,
     borderTopStyle: "solid",
     borderTopColor: colors.faint,
-    backgroundColor: colors.white,
-    minHeight: 200,
-    maxHeight: 260,
+    backgroundColor: colors.bg,
+    minHeight: 188,
+    maxHeight: 228,
   },
   head: {
     display: "flex",
     justifyContent: "space-between",
-    padding: "8px 14px",
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: "0.16em",
-    color: colors.ink,
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.faint,
+    alignItems: "baseline",
+    padding: "8px 20px 4px",
+    fontFamily: fonts.ui,
+    fontSize: 11,
+    color: colors.muted,
   },
   meta: {
-    letterSpacing: "0.04em",
+    fontFamily: fonts.mono,
+    letterSpacing: 0,
     color: colors.muted,
-    textTransform: "none",
     fontSize: 11,
   },
   list: {
@@ -201,98 +145,73 @@ const styles = stylex.create({
     overflow: "auto",
     fontFamily: fonts.mono,
   },
-  cluster: {
-    display: "grid",
-    gridTemplateColumns: "72px 1fr",
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.faint,
-  },
-  stamp: {
-    padding: "6px 10px 6px 14px",
-    fontSize: 11,
-    color: colors.muted,
-    fontVariantNumeric: "tabular-nums",
-  },
-  stampInline: {
-    fontVariantNumeric: "tabular-nums",
-    color: colors.muted,
-    fontSize: 11,
-  },
-  events: {
-    display: "flex",
-    flexDirection: "column",
-  },
   row: {
     display: "grid",
-    gridTemplateColumns: "72px 1fr",
-    gap: 10,
+    gridTemplateColumns: "68px 64px 28px 1fr",
+    gap: 8,
     width: "100%",
     textAlign: "left",
     backgroundColor: "transparent",
     borderWidth: 0,
-    borderLeftWidth: 3,
+    borderLeftWidth: 2,
     borderLeftStyle: "solid",
     borderLeftColor: "transparent",
-    padding: "4px 14px 4px 8px",
+    padding: "3px 20px 3px 18px",
     cursor: "pointer",
     fontFamily: fonts.mono,
     fontSize: 12,
     color: colors.ink,
   },
-  pendingRow: {
-    gridTemplateColumns: "72px 72px 1fr",
-    borderBottomWidth: 1,
-    borderBottomStyle: "solid",
-    borderBottomColor: colors.faint,
-    padding: "5px 14px",
-  },
-  child: {
-    paddingLeft: 18,
+  stamp: {
+    fontVariantNumeric: "tabular-nums",
+    color: colors.muted,
+    fontSize: 11,
   },
   done: {
     color: colors.muted,
   },
   ahead: {
     color: colors.ink,
-    opacity: 0.55,
+    opacity: 0.5,
   },
   current: {
-    backgroundColor: colors.paleLime,
     color: colors.ink,
-    fontWeight: 500,
     borderLeftColor: colors.lime,
   },
   next: {
-    backgroundColor: colors.paleLime,
     color: colors.ink,
-    fontWeight: 500,
     borderLeftColor: colors.lime,
   },
   future: {
     color: colors.ink,
-    opacity: 0.72,
+    opacity: 0.7,
   },
   selected: {
     borderLeftColor: colors.lime,
   },
   kind: {
     textTransform: "uppercase",
-    letterSpacing: "0.08em",
+    letterSpacing: "0.06em",
     fontSize: 10,
-    paddingTop: 2,
+    paddingTop: 1,
   },
   kindDefault: { color: colors.muted },
   kindOk: { color: colors.leaf },
   kindAlert: { color: colors.coral },
   kindTimer: { color: colors.ink },
-  kindSend: { color: colors.lime },
-  kindNext: { color: colors.lime, fontWeight: 600 },
+  kindNext: { color: colors.lime, fontWeight: 700 },
   kindFuture: { color: colors.muted },
+  actor: {
+    color: colors.ink,
+    fontWeight: 600,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
   text: {
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
+    color: "inherit",
   },
   empty: {
     padding: 14,

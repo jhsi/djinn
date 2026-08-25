@@ -1,25 +1,42 @@
 import type { Scenario, ScenarioContext } from "../simulation/types";
-import { makeNodes } from "./helpers";
+import { clusterIds, majorityOf, makeNodes, nodeIds } from "./helpers";
 
-const N = 3;
-const W = 2;
-const TO_B = 400;
-const TO_C = 1500;
 const ACK_LATENCY = 400;
+
+function writeQuorum(n: number): number {
+  return majorityOf(n);
+}
+
+function replicaLatency(id: string): number {
+  if (id === "B") return 400;
+  if (id === "C") return 1500;
+  if (id === "D") return 700;
+  if (id === "E") return 2200;
+  return 1000;
+}
 
 export const quorum: Scenario = {
   id: "quorum",
   name: "Quorum Write",
-  description: `N=${N} replicas, W=${W} acknowledgements. The write can succeed even if one replica is slow or partitioned.`,
+  layout: "cluster",
+  configurableNodeCount: true,
+  defaultNodeCount: 3,
+  description:
+    "A coordinator writes to replicas. The write succeeds once a quorum of acknowledgements is reached — even if some replicas are slow or partitioned.",
   actions: [{ id: "client-set", label: "Client SET x = 5" }],
-  createInitialState: () => ({
-    nodes: makeNodes(["A", "B", "C"], (id) => ({
-      role: id === "A" ? "COORDINATOR" : "REPLICA",
-      x: 0,
-      acks: id === "A" ? "0 / 2" : null,
-      write: id === "A" ? "idle" : null,
-    })),
-  }),
+  createInitialState: (nodeCount = 3) => {
+    const ids = clusterIds(nodeCount);
+    const w = writeQuorum(ids.length);
+    return {
+      nodes: makeNodes(ids, (id) => ({
+        role: id === "A" ? "COORDINATOR" : "REPLICA",
+        x: 0,
+        acks: id === "A" ? `0 / ${w}` : null,
+        write: id === "A" ? "idle" : null,
+        writeQuorum: id === "A" ? w : null,
+      })),
+    };
+  },
   onStart() {},
   onAction(actionId, ctx) {
     if (actionId !== "client-set") return;
@@ -47,15 +64,16 @@ export const quorum: Scenario = {
     if (payload.type === "ACK" && nodeId === "A") {
       const state = ctx.getNode("A").state;
       if (state.write !== "pending") return;
+      const w = Number(state.writeQuorum ?? writeQuorum(nodeIds(ctx).length));
       const acks = Number(state.ackCount ?? 1) + 1;
-      const success = acks >= W;
+      const success = acks >= w;
       ctx.updateNodeState("A", {
         ackCount: acks,
-        acks: `${Math.min(acks, W)} / ${W}`,
+        acks: `${Math.min(acks, w)} / ${w}`,
         write: success ? "success" : "pending",
       });
-      if (success && acks === W) {
-        ctx.log("write succeeds (quorum W=2 reached)");
+      if (success && acks === w) {
+        ctx.log(`write succeeds (quorum W=${w} reached)`);
       }
     }
   },
@@ -65,16 +83,31 @@ export const quorum: Scenario = {
     if (node.state.write) lines.push(`write: ${String(node.state.write)}`);
     return lines;
   },
+  presentNode(node) {
+    if (node.state.role === "COORDINATOR") {
+      return {
+        role: "COORDINATOR",
+        primary: node.state.write === "pending" || node.state.acks ? "ACK" : `x = ${String(node.state.x)}`,
+        secondary: node.state.acks ? String(node.state.acks) : String(node.state.write ?? "idle"),
+      };
+    }
+    return { role: "REPLICA", primary: `x = ${String(node.state.x)}` };
+  },
 };
 
 function startWrite(ctx: ScenarioContext) {
+  const ids = nodeIds(ctx);
+  const w = writeQuorum(ids.length);
   ctx.log("client SET x = 5 → coordinator A");
   ctx.updateNodeState("A", {
     x: 5,
     ackCount: 1,
-    acks: "1 / 2",
+    acks: `1 / ${w}`,
     write: "pending",
+    writeQuorum: w,
   });
-  ctx.sendMessage("A", "B", { type: "WRITE", key: "x", value: 5 }, TO_B);
-  ctx.sendMessage("A", "C", { type: "WRITE", key: "x", value: 5 }, TO_C);
+  for (const id of ids) {
+    if (id === "A") continue;
+    ctx.sendMessage("A", id, { type: "WRITE", key: "x", value: 5 }, replicaLatency(id));
+  }
 }

@@ -6,7 +6,6 @@ import { election } from "./election";
 import { gossip } from "./gossip";
 import { quorum } from "./quorum";
 import { raftScenario } from "./raft";
-import { manual } from "./manual";
 
 export const SCENARIOS: Scenario[] = [
   pingPong,
@@ -16,7 +15,6 @@ export const SCENARIOS: Scenario[] = [
   gossip,
   quorum,
   raftScenario,
-  manual,
 ];
 
 export function getScenario(id: string): Scenario {

@@ -4,7 +4,8 @@ import { makeNodes } from "./helpers";
 export const pingPong: Scenario = {
   id: "ping-pong",
   name: "Ping / Pong",
-  description: "Two nodes exchange a ping and a pong. Use this scenario to learn the Druid UI.",
+  layout: "line",
+  description: "Two nodes exchange a ping and a pong. Use this scenario to learn the djinn UI.",
   createInitialState: () => ({
     nodes: makeNodes(["A", "B"], (id) =>
       id === "A"

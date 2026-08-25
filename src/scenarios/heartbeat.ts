@@ -1,5 +1,5 @@
 import type { Scenario } from "../simulation/types";
-import { makeNodes } from "./helpers";
+import { clusterIds, makeNodes, nodeIds } from "./helpers";
 
 const INTERVAL = 1000;
 const TIMEOUT = 3000;
@@ -8,10 +8,13 @@ const LATENCY = 100;
 export const heartbeat: Scenario = {
   id: "heartbeat",
   name: "Heartbeats / Failure Detection",
+  layout: "leader-centered",
+  configurableNodeCount: true,
+  defaultNodeCount: 3,
   description:
-    "A sends heartbeats to B and C. They infer failure from silence — they cannot see a crash directly.",
-  createInitialState: () => ({
-    nodes: makeNodes(["A", "B", "C"], (id) =>
+    "A sends heartbeats to the other nodes. They infer failure from silence — they cannot see a crash directly.",
+  createInitialState: (nodeCount = 3) => ({
+    nodes: makeNodes(clusterIds(nodeCount), (id) =>
       id === "A"
         ? { role: "MONITORED", heartbeatsSent: 0 }
         : {
@@ -25,7 +28,8 @@ export const heartbeat: Scenario = {
   onStart(ctx) {
     sendHeartbeats(ctx);
     ctx.setTimer("A", INTERVAL, "heartbeat");
-    for (const id of ["B", "C"]) {
+    for (const id of nodeIds(ctx)) {
+      if (id === "A") continue;
       ctx.setTimer(id, TIMEOUT, "failure-detect");
     }
   },
@@ -68,6 +72,18 @@ export const heartbeat: Scenario = {
       `suspected failed: ${String(node.state.suspectedFailed)}`,
     ];
   },
+  presentNode(node, snapshot) {
+    if (node.id === "A") {
+      return { role: "MONITORED", primary: "LIVE" };
+    }
+    if (node.state.suspectedFailed === true) {
+      return { role: "WATCHER", primary: "SUSPECTED" };
+    }
+    const last = node.state.lastHeartbeat;
+    const ago =
+      last == null ? "never" : `${Math.max(0, Math.round(snapshot.currentTime - Number(last)))}ms`;
+    return { role: "WATCHER", primary: "HEALTHY", secondary: `last heartbeat ${ago}` };
+  },
 };
 
 function sendHeartbeats(ctx: Parameters<Scenario["onStart"]>[0]) {
@@ -77,7 +93,8 @@ function sendHeartbeats(ctx: Parameters<Scenario["onStart"]>[0]) {
     heartbeatsSent: Number(s.heartbeatsSent ?? 0) + 1,
   }));
   const sentAt = ctx.now();
-  for (const to of ["B", "C"]) {
+  for (const to of nodeIds(ctx)) {
+    if (to === "A") continue;
     ctx.sendMessage("A", to, { type: "HEARTBEAT", sentAt }, LATENCY);
   }
 }

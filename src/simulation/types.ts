@@ -1,6 +1,24 @@
 export type NodeStatus = "running" | "stopped";
 export type SimStatus = "playing" | "paused";
-export type PlaybackSpeed = 0.25 | 1 | 4 | 32;
+export type PlaybackSpeed = "auto" | 0.25 | 1 | 4 | 32;
+export type GraphLayout = "triangle" | "ring" | "leader-centered" | "cluster" | "line";
+export type NodeDensity = "expanded" | "compact";
+
+export type NodeBadge = { label: string };
+
+export type NodePresentation = {
+  role?: string;
+  primary?: string;
+  secondary?: string;
+  badges?: NodeBadge[];
+  placeholder?: string;
+  showTimerLabel?: boolean;
+};
+
+export type InspectorSection = {
+  title: string;
+  rows: { label: string; value: string }[];
+};
 
 export type Node = {
   id: string;
@@ -90,6 +108,7 @@ export type Snapshot = {
   nextEvent: SimulationEvent | null;
   pendingCount: number;
   timers: TimerInfo[];
+  started: boolean;
 };
 
 export type ScenarioContext = {
@@ -138,13 +157,18 @@ export type Scenario = {
   name: string;
   description: string;
   actions?: ScenarioAction[];
-  createInitialState: () => InitialState;
+  createInitialState: (nodeCount?: number) => InitialState;
   onStart: (ctx: ScenarioContext) => void;
   onMessage: (nodeId: string, message: Message, ctx: ScenarioContext) => void;
   onTimer?: (nodeId: string, timer: TimerEvent, ctx: ScenarioContext) => void;
   onCrash?: (nodeId: string, ctx: ScenarioContext) => void;
   onRestart?: (nodeId: string, ctx: ScenarioContext) => void;
   onAction?: (actionId: string, ctx: ScenarioContext) => void;
+  layout?: GraphLayout;
   summarizeNode?: (node: Node) => string[];
   glanceNode?: (node: Node) => string[];
+  presentNode?: (node: Node, snapshot: Snapshot) => NodePresentation;
+  inspectNode?: (node: Node, snapshot: Snapshot) => InspectorSection[];
+  configurableNodeCount?: boolean;
+  defaultNodeCount?: number;
 };

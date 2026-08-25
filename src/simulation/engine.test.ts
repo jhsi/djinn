@@ -373,3 +373,27 @@ describe("Link physics", () => {
     expect(sim.snapshot().eventLog.some((e) => e.kind === "drop")).toBe(true);
   });
 });
+
+describe("configurable node count", () => {
+  it("builds Raft with the requested cluster size", () => {
+    const five = new Simulation(raftScenario, 5);
+    expect(five.snapshot().nodes.map((n) => n.id)).toEqual(["A", "B", "C", "D", "E"]);
+    expect(new Simulation(raftScenario, 2).snapshot().nodes).toHaveLength(2);
+    expect(new Simulation(raftScenario).snapshot().nodes).toHaveLength(3);
+  });
+
+  it("keeps Gossip at five nodes by default", () => {
+    expect(new Simulation(gossip).snapshot().nodes).toHaveLength(5);
+    expect(new Simulation(gossip, 3).snapshot().nodes.map((n) => n.id)).toEqual(["A", "B", "C"]);
+  });
+
+  it("locks after play and unlocks on reset", () => {
+    const sim = new Simulation(raftScenario, 4);
+    expect(sim.snapshot().started).toBe(false);
+    sim.play();
+    expect(sim.snapshot().started).toBe(true);
+    sim.reset();
+    expect(sim.snapshot().started).toBe(false);
+    expect(sim.snapshot().nodes).toHaveLength(4);
+  });
+});

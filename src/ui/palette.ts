@@ -9,6 +9,8 @@ export type Palette = {
   faint: string;
   white: string;
   line: string;
+  quiet: string;
+  edge: string;
 };
 
 export const palettes: Record<ThemeName, Palette> = {
@@ -19,8 +21,10 @@ export const palettes: Record<ThemeName, Palette> = {
     coral: "#FF4B6A",
     muted: "#8A8A82",
     faint: "#2E2E28",
-    white: "#1A1A16",
-    line: "#4A4A42",
+    white: "#161612",
+    line: "#6A6A60",
+    quiet: "#5C7340",
+    edge: "#3A3A34",
   },
   light: {
     bg: "#F3F2EC",
@@ -30,6 +34,8 @@ export const palettes: Record<ThemeName, Palette> = {
     muted: "#6B6B64",
     faint: "#D4D4CC",
     white: "#FFFEFA",
-    line: "#C8C8BE",
+    line: "#A8A89E",
+    quiet: "#5A7344",
+    edge: "#C4C4BA",
   },
 };

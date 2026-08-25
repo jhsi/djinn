@@ -1,10 +1,7 @@
 import type { Node, Scenario, ScenarioContext } from "../simulation/types";
-import { makeNodes } from "./helpers";
+import { clusterIds, electionTimeoutFor, majorityOf, makeNodes, nodeIds } from "./helpers";
 
-const IDS = ["A", "B", "C"] as const;
-const TIMEOUTS: Record<string, number> = { A: 1500, B: 2000, C: 2500 };
 const HEARTBEAT = 400;
-const MAJORITY = 2;
 
 type Role = "FOLLOWER" | "CANDIDATE" | "LEADER";
 
@@ -73,7 +70,7 @@ function applyCommitted(s: RaftState) {
 
 function resetElection(ctx: ScenarioContext, nodeId: string) {
   ctx.cancelTimers(nodeId, "election");
-  ctx.setTimer(nodeId, TIMEOUTS[nodeId], "election");
+  ctx.setTimer(nodeId, electionTimeoutFor(nodeId), "election");
 }
 
 function stepDown(ctx: ScenarioContext, nodeId: string, term: number) {
@@ -97,7 +94,7 @@ function becomeLeader(ctx: ScenarioContext, nodeId: string) {
     s.leader = nodeId;
     s.votes = [];
     const next = s.log.length;
-    for (const id of IDS) {
+    for (const id of nodeIds(ctx)) {
       s.nextIndex[id] = next;
       s.matchIndex[id] = id === nodeId ? lastIndex(s.log) : -1;
     }
@@ -113,7 +110,7 @@ function becomeLeader(ctx: ScenarioContext, nodeId: string) {
 }
 
 function replicateAll(ctx: ScenarioContext, leaderId: string) {
-  for (const to of IDS) {
+  for (const to of nodeIds(ctx)) {
     if (to !== leaderId) sendAppendEntries(ctx, leaderId, to);
   }
 }
@@ -143,13 +140,16 @@ function tryCommit(ctx: ScenarioContext, leaderId: string) {
     for (let n = lastIndex(s.log); n > s.commitIndex; n -= 1) {
       if (s.log[n].term !== s.term) continue;
       let count = 0;
-      for (const id of IDS) {
+      for (const id of nodeIds(ctx)) {
         if ((s.matchIndex[id] ?? -1) >= n) count += 1;
       }
-      if (count >= MAJORITY) {
+      if (count >= majorityOf(nodeIds(ctx).length)) {
         s.commitIndex = n;
         applyCommitted(s);
-        ctx.log(`${leaderId} committed index ${n} (${s.log[n].command})`);
+        ctx.log(`${leaderId} committed index ${n} (${s.log[n].command})`, {
+          kind: "state",
+          nodeId: leaderId,
+        });
         break;
       }
     }
@@ -170,11 +170,14 @@ function logUpToDate(
 export const raftScenario: Scenario = {
   id: "raft",
   name: "Raft",
+  layout: "triangle",
   description:
     "Educational Raft: elections, heartbeats, and majority log replication. Pause, delay a vote, drop a heartbeat, partition the leader.",
   actions: [{ id: "client-command", label: "Client SET x += 1" }],
-  createInitialState: () => ({
-    nodes: makeNodes([...IDS], () => ({
+  configurableNodeCount: true,
+  defaultNodeCount: 3,
+  createInitialState: (nodeCount = 3) => ({
+    nodes: makeNodes(clusterIds(nodeCount), () => ({
       role: "FOLLOWER",
       term: 0,
       votedFor: null,
@@ -190,7 +193,7 @@ export const raftScenario: Scenario = {
     })),
   }),
   onStart(ctx) {
-    for (const id of IDS) resetElection(ctx, id);
+    for (const id of nodeIds(ctx)) resetElection(ctx, id);
   },
   onAction(actionId, ctx) {
     if (actionId !== "client-command") return;
@@ -199,7 +202,7 @@ export const raftScenario: Scenario = {
       ctx.log("client request failed: no leader");
       return;
     }
-    ctx.sendMessage("client", leader.id, { type: "ClientCommand" });
+    ctx.sendMessage("client", leader.id, { type: "ClientCommand", command: "SET x+=1" });
   },
   onMessage(nodeId, message, ctx) {
     const p = message.payload as Record<string, unknown>;
@@ -275,18 +278,32 @@ export const raftScenario: Scenario = {
   glanceNode(node) {
     const s = raft(node);
     if (s.role === "LEADER") {
-      const x = s.kv.x;
-      return [
-        "LEADER",
-        `Term ${s.term}`,
-        `Commit ${s.commitIndex < 0 ? "—" : s.commitIndex}`,
-        ...(x != null ? [`x = ${String(x)}`] : []),
-      ];
+      const commit = s.commitIndex < 0 ? "—" : String(s.commitIndex);
+      const x = s.kv.x != null ? ` · x ${String(s.kv.x)}` : "";
+      return ["LEADER", `Term ${s.term} · Commit ${commit}${x}`];
     }
     if (s.role === "CANDIDATE") {
-      return ["CANDIDATE", `Term ${s.term}`, `votes ${s.votes.length}`];
+      return ["CANDIDATE", `Term ${s.term} · votes ${s.votes.length}`];
     }
-    return ["FOLLOWER", `Term ${s.term}`, `Leader: ${s.leader ?? "—"}`];
+    return ["FOLLOWER", `Term ${s.term} · Leader ${s.leader ?? "—"}`];
+  },
+  presentNode(node) {
+    const s = raft(node);
+    const last = s.log.length > 0 ? s.log[s.log.length - 1] : null;
+    const badges = last ? [{ label: last.command }] : undefined;
+    if (s.role === "LEADER") {
+      const commit = s.commitIndex < 0 ? "—" : String(s.commitIndex);
+      const x = s.kv.x != null ? ` · x ${String(s.kv.x)}` : "";
+      return { role: "LEADER", primary: `Term ${s.term} · Commit ${commit}${x}`, badges };
+    }
+    if (s.role === "CANDIDATE") {
+      return { role: "CANDIDATE", primary: `Term ${s.term} · votes ${s.votes.length}` };
+    }
+    return {
+      role: "FOLLOWER",
+      primary: `Term ${s.term} · Leader ${s.leader ?? "—"}`,
+      badges,
+    };
   },
 };
 
@@ -303,7 +320,7 @@ function applyClientCommand(nodeId: string, ctx: ScenarioContext) {
     s.log.push({ term: s.term, command });
     s.matchIndex[nodeId] = lastIndex(s.log);
   });
-  ctx.log(`client → ${nodeId}: ${command}`, { nodeId, from: "client", to: nodeId });
+  ctx.log(`appended ${command}`, { kind: "state", nodeId });
   replicateAll(ctx, nodeId);
 }
 
@@ -319,7 +336,7 @@ function startElection(ctx: ScenarioContext, nodeId: string) {
   ctx.log(`${nodeId} → CANDIDATE term ${s.term}`, { kind: "state", nodeId });
   resetElection(ctx, nodeId);
   ctx.cancelTimers(nodeId, "heartbeat");
-  for (const to of IDS) {
+  for (const to of nodeIds(ctx)) {
     if (to === nodeId) continue;
     ctx.sendMessage(
       nodeId,
@@ -333,7 +350,7 @@ function startElection(ctx: ScenarioContext, nodeId: string) {
       },
     );
   }
-  if (s.votes.length >= MAJORITY) becomeLeader(ctx, nodeId);
+  if (s.votes.length >= majorityOf(nodeIds(ctx).length)) becomeLeader(ctx, nodeId);
 }
 
 function handleRequestVote(
@@ -383,7 +400,7 @@ function handleVoteResponse(
   write(ctx, nodeId, (st) => {
     if (!st.votes.includes(from)) st.votes.push(from);
   });
-  if (raft(ctx.getNode(nodeId)).votes.length >= MAJORITY) {
+  if (raft(ctx.getNode(nodeId)).votes.length >= majorityOf(nodeIds(ctx).length)) {
     becomeLeader(ctx, nodeId);
   }
 }

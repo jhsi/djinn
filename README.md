@@ -1,8 +1,8 @@
-# Druid
+# djinn
 
-A local-first sandbox for learning and debugging distributed systems. Druid visualizes deterministic simulations of nodes, messages, time, failures, and algorithms — all in one browser tab.
+A local-first sandbox for learning and debugging distributed systems. djinn visualizes deterministic simulations of nodes, messages, time, failures, and algorithms — all in one browser tab.
 
-Distributed systems are difficult because behavior emerges from the ordering and timing of events. Druid makes that execution inspectable, controllable, reproducible, and perturbable.
+Distributed systems are difficult because behavior emerges from the ordering and timing of events. djinn makes that execution inspectable, controllable, reproducible, and perturbable.
 
 ## Run
 

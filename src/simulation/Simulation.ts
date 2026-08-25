@@ -61,6 +61,7 @@ function lastLogSeq(entries: LogEntry[]): number {
 
 export class Simulation {
   readonly scenario: Scenario;
+  readonly nodeCount: number | undefined;
   private nodes: Node[] = [];
   private messages = new Map<string, Message>();
   private partitions = new Set<string>();
@@ -84,10 +85,12 @@ export class Simulation {
 
   currentTime = 0;
   status: SimStatus = "paused";
-  speed: PlaybackSpeed = 1;
+  speed: PlaybackSpeed = "auto";
+  private started = false;
 
-  constructor(scenario: Scenario) {
+  constructor(scenario: Scenario, nodeCount?: number) {
     this.scenario = scenario;
+    this.nodeCount = nodeCount;
     this.bootstrap();
     this.frames = [this.capture()];
     this.cursor = 0;
@@ -109,7 +112,7 @@ export class Simulation {
   }
 
   private bootstrap(): void {
-    const initial = this.scenario.createInitialState();
+    const initial = this.scenario.createInitialState(this.nodeCount);
     this.nodes = initial.nodes.map((n) => ({
       id: n.id,
       status: n.status,
@@ -150,10 +153,12 @@ export class Simulation {
     this.cursor = 0;
     this.tapeLog = this.logEntries.map(cloneLog);
     this.exploredUntil = this.currentTime;
+    this.started = false;
     this.notify();
   }
 
   play(): void {
+    this.started = true;
     this.status = "playing";
     this.notify();
   }
@@ -169,6 +174,7 @@ export class Simulation {
   }
 
   step(): SimulationEvent | null {
+    this.started = true;
     this.status = "paused";
     if (this.cursor < this.frames.length - 1) {
       this.restore(this.cursor + 1);
@@ -218,6 +224,7 @@ export class Simulation {
   seekToTime(t: number): void {
     this.status = "paused";
     const target = Math.min(Math.max(0, t), this.horizon());
+    if (target > 0) this.started = true;
 
     if (target > this.exploredUntil + 1e-9) {
       this.restore(this.frames.length - 1);
@@ -239,6 +246,7 @@ export class Simulation {
   }
 
   seekToLog(seq: number): void {
+    this.started = true;
     this.status = "paused";
     const index = this.frames.findIndex((frame) => lastLogSeq(frame.logEntries) >= seq);
     if (index >= 0) {
@@ -255,6 +263,7 @@ export class Simulation {
   }
 
   seekToPrevEvent(): void {
+    this.started = true;
     this.status = "paused";
     const seq = lastLogSeq(this.logEntries);
     const prev = [...this.tapeLog].reverse().find((entry) => entry.seq < seq);
@@ -267,6 +276,7 @@ export class Simulation {
   }
 
   seekToNextEvent(): void {
+    this.started = true;
     this.status = "paused";
     const seq = lastLogSeq(this.logEntries);
     const next = this.tapeLog.find((entry) => entry.seq > seq);
@@ -282,6 +292,7 @@ export class Simulation {
   dropMessage(messageId: string): boolean {
     const message = this.messages.get(messageId);
     if (!message) return false;
+    this.started = true;
     this.branchIfNeeded();
     this.messages.delete(messageId);
     this.queue.remove((e) => e.type === "deliver" && e.messageId === messageId);
@@ -299,6 +310,7 @@ export class Simulation {
   delayMessage(messageId: string, newTimestamp: number): boolean {
     const message = this.messages.get(messageId);
     if (!message) return false;
+    this.started = true;
     this.branchIfNeeded();
     const deliverAt = Math.max(newTimestamp, this.currentTime);
     const previous = message.deliverAt;
@@ -325,6 +337,7 @@ export class Simulation {
     const next = Math.max(0, Math.round(ms));
     const previous = this.getLinkLatency(a, b);
     if (previous === next && this.linkLatencies.get(key) === next) return;
+    this.started = true;
     this.branchIfNeeded();
     this.linkLatencies.set(key, next);
     const scale = previous <= 0 ? 1 : next / previous;
@@ -351,6 +364,7 @@ export class Simulation {
       .filter((m) => edgeKey(m.from, m.to) === key)
       .sort((x, y) => x.deliverAt - y.deliverAt);
     if (candidates[0]) return this.dropMessage(candidates[0].id);
+    this.started = true;
     this.branchIfNeeded();
     this.pendingDrops.add(key);
     this.commitPhysics();
@@ -365,6 +379,7 @@ export class Simulation {
   partition(a: string, b: string): void {
     const key = edgeKey(a, b);
     if (this.partitions.has(key)) return;
+    this.started = true;
     this.branchIfNeeded();
     this.partitions.add(key);
     const inFlight = [...this.messages.values()].filter((m) => edgeKey(m.from, m.to) === key);
@@ -385,6 +400,7 @@ export class Simulation {
   healPartition(a: string, b: string): void {
     const key = edgeKey(a, b);
     if (!this.partitions.has(key)) return;
+    this.started = true;
     this.branchIfNeeded();
     this.partitions.delete(key);
     this.pushLog("heal", `heal ${a} ↔ ${b}`, { a, b });
@@ -395,6 +411,7 @@ export class Simulation {
   crashNode(nodeId: string): void {
     const node = this.requireNode(nodeId);
     if (node.status === "stopped") return;
+    this.started = true;
     this.branchIfNeeded();
     node.status = "stopped";
     this.cancelTimers(nodeId);
@@ -407,6 +424,7 @@ export class Simulation {
   restartNode(nodeId: string): void {
     const node = this.requireNode(nodeId);
     if (node.status === "running") return;
+    this.started = true;
     this.branchIfNeeded();
     node.status = "running";
     this.pushLog("restart", `${nodeId} restarted`, { nodeId });
@@ -416,6 +434,7 @@ export class Simulation {
   }
 
   invokeAction(actionId: string): void {
+    this.started = true;
     this.branchIfNeeded();
     this.scenario.onAction?.(actionId, this.ctx);
     this.recordFrame();
@@ -428,6 +447,7 @@ export class Simulation {
     payload: unknown,
     latency?: number,
   ): string | null {
+    this.started = true;
     this.branchIfNeeded();
     const id = this.ctx.sendMessage(from, to, payload, latency);
     this.recordFrame();
@@ -562,6 +582,7 @@ export class Simulation {
       nextEvent: pending[0] ? cloneEvent(pending[0]) : null,
       pendingCount: pending.length,
       timers: [...this.timers.values()].map(cloneTimer),
+      started: this.started,
     };
   }
 

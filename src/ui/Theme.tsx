@@ -9,7 +9,7 @@ import {
 } from "react";
 import { palettes, type Palette, type ThemeName } from "./palette";
 
-const STORAGE_KEY = "druid-theme";
+const STORAGE_KEY = "djinn-theme";
 
 type ThemeContextValue = {
   theme: ThemeName;

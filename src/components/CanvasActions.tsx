@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { colors, fonts } from "../ui/theme.stylex";
 import { formatTime, payloadGlance, payloadLabel } from "../simulation/format";
+import { displayActor } from "../ui/selection";
 import type { Message } from "../simulation/types";
 
 export function EdgeActions({
@@ -94,7 +95,7 @@ export function MessageActions({
       onClick={(e) => e.stopPropagation()}
     >
       <div {...stylex.props(styles.kicker)}>
-        {message.from} → {message.to}
+        {displayActor(message.from)} → {displayActor(message.to)}
       </div>
       <div {...stylex.props(styles.title)}>{glance.primary}</div>
       {glance.secondary ? <div {...stylex.props(styles.sub)}>{glance.secondary}</div> : null}
@@ -120,19 +121,24 @@ export function ClientDock({
   y,
   actionLabel,
   target,
+  sending,
   onSend,
 }: {
   x: number;
   y: number;
   actionLabel: string;
   target: string | null;
+  sending?: boolean;
   onSend: () => void;
 }) {
   return (
-    <div style={{ left: x, top: y }} {...stylex.props(styles.client)}>
-      <div {...stylex.props(styles.kicker)}>CLIENT</div>
+    <div style={{ left: x, top: y }} {...stylex.props(styles.client, sending && styles.clientSend)}>
+      <div {...stylex.props(styles.clientHead)}>
+        <span {...stylex.props(styles.clientMark)} />
+        <div {...stylex.props(styles.clientKicker)}>CLIENT</div>
+      </div>
       <div {...stylex.props(styles.command)}>{actionLabel}</div>
-      <div {...stylex.props(styles.meta)}>target {target ?? "none"}</div>
+      <div {...stylex.props(styles.target)}>{target ? `Target: ${target}` : "No leader"}</div>
       <button
         type="button"
         onClick={(e) => {
@@ -140,7 +146,7 @@ export function ClientDock({
           onSend();
         }}
         disabled={!target}
-        {...stylex.props(styles.action, !target && styles.disabled)}
+        {...stylex.props(styles.send, !target && styles.disabled)}
       >
         Send
       </button>
@@ -159,47 +165,81 @@ const styles = stylex.create({
     borderStyle: "solid",
     borderColor: colors.faint,
     padding: "10px 12px",
-    fontFamily: fonts.mono,
+    fontFamily: fonts.ui,
     color: colors.ink,
-    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
   },
   client: {
     position: "absolute",
     transform: "translate(-50%, -50%)",
     zIndex: 3,
-    width: 148,
-    backgroundColor: colors.white,
+    width: 118,
+    backgroundColor: colors.bg,
     borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: colors.faint,
-    padding: "10px 12px",
-    fontFamily: fonts.mono,
+    borderStyle: "dashed",
+    borderColor: colors.line,
+    padding: "10px 12px 12px",
+    fontFamily: fonts.ui,
     color: colors.ink,
+    boxSizing: "border-box",
   },
-  kicker: {
-    fontSize: 10,
-    letterSpacing: "0.14em",
-    color: colors.muted,
+  clientSend: {
+    borderStyle: "solid",
+    borderColor: colors.quiet,
+  },
+  clientHead: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
     marginBottom: 6,
   },
+  clientMark: {
+    width: 7,
+    height: 7,
+    backgroundColor: colors.quiet,
+    flexShrink: 0,
+  },
+  clientKicker: {
+    fontFamily: fonts.display,
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: "0.14em",
+    color: colors.quiet,
+  },
+  kicker: {
+    fontFamily: fonts.ui,
+    fontSize: 10,
+    letterSpacing: "0.08em",
+    color: colors.muted,
+    marginBottom: 4,
+  },
   title: {
+    fontFamily: fonts.mono,
     fontSize: 13,
     fontWeight: 600,
   },
   sub: {
+    fontFamily: fonts.mono,
     fontSize: 12,
     color: colors.muted,
     marginTop: 2,
   },
   command: {
-    fontSize: 12,
+    fontFamily: fonts.mono,
+    fontSize: 11,
     fontWeight: 600,
-    marginBottom: 6,
+    marginBottom: 4,
     lineHeight: 1.35,
+  },
+  target: {
+    fontFamily: fonts.ui,
+    fontSize: 10,
+    color: colors.muted,
+    marginBottom: 8,
   },
   row: {
     display: "flex",
     justifyContent: "space-between",
+    fontFamily: fonts.mono,
     fontSize: 12,
     marginBottom: 6,
   },
@@ -212,12 +252,14 @@ const styles = stylex.create({
     accentColor: colors.lime,
   },
   meta: {
+    fontFamily: fonts.mono,
     fontSize: 11,
     color: colors.muted,
     marginTop: 6,
     lineHeight: 1.4,
   },
   hint: {
+    fontFamily: fonts.mono,
     fontSize: 11,
     color: colors.muted,
     marginTop: 4,
@@ -227,7 +269,7 @@ const styles = stylex.create({
     fontSize: 12,
     fontWeight: 600,
     marginBottom: 8,
-    letterSpacing: "0.08em",
+    letterSpacing: "0.06em",
   },
   actions: {
     display: "flex",
@@ -236,16 +278,26 @@ const styles = stylex.create({
     flexWrap: "wrap",
   },
   action: {
-    backgroundColor: colors.lime,
-    color: colors.charcoal,
+    backgroundColor: "transparent",
+    color: colors.ink,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: colors.lime,
-    fontFamily: fonts.mono,
+    borderColor: colors.line,
+    fontFamily: fonts.ui,
     fontSize: 11,
     padding: "4px 8px",
     cursor: "pointer",
-    fontWeight: 600,
+  },
+  send: {
+    backgroundColor: "transparent",
+    color: colors.ink,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: colors.line,
+    fontFamily: fonts.ui,
+    fontSize: 11,
+    padding: "2px 8px",
+    cursor: "pointer",
   },
   danger: {
     backgroundColor: "transparent",
@@ -253,7 +305,7 @@ const styles = stylex.create({
     borderWidth: 1,
     borderStyle: "solid",
     borderColor: colors.coral,
-    fontFamily: fonts.mono,
+    fontFamily: fonts.ui,
     fontSize: 11,
     padding: "4px 8px",
     cursor: "pointer",

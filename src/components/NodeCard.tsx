@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import type { Node, Scenario, Snapshot } from "../simulation/types";
-import { glanceNode } from "../ui/glance";
+import { presentNode, timerLabel } from "../ui/presentation";
+import type { NodeFeedback } from "../ui/feedback";
 import { nodeStyles } from "./NodeView";
 
 type Props = {
@@ -9,9 +9,11 @@ type Props = {
   x: number;
   y: number;
   selected: boolean;
+  related: boolean;
   scenario: Scenario;
   snapshot: Snapshot;
   stale: boolean;
+  feedback: NodeFeedback;
   onClick: () => void;
   onCrash: () => void;
   onRestart: () => void;
@@ -22,30 +24,35 @@ export function NodeCard({
   x,
   y,
   selected,
+  related,
   scenario,
   snapshot,
   stale,
+  feedback,
   onClick,
   onCrash,
   onRestart,
 }: Props) {
-  const glance = glanceNode(node, scenario, snapshot);
-  const role = glance.role ?? "";
+  const view = presentNode(node, scenario, snapshot);
+  const compact = view.density === "compact";
+  const role = view.role ?? "";
   const leader = role === "LEADER" || role === "PRIMARY" || role === "COORDINATOR";
   const candidate = role === "CANDIDATE";
-  const known = node.state.knownValues as Record<string, unknown> | undefined;
-  const informed = Boolean(known && Object.keys(known).length > 0);
-  const flash = useTransitionFlash(node);
-  const remaining = glance.timer ? Math.round(glance.timer.remaining) : 0;
-  const ratio = glance.timer ? Math.min(1, glance.timer.remaining / glance.timer.total) : 0;
-  const urgent = Boolean(glance.timer && ratio < 0.28 && node.status === "running");
+  const remaining = view.timer ? Math.round(view.timer.remaining) : 0;
+  const ratio = view.timer ? Math.min(1, view.timer.remaining / view.timer.total) : 0;
+  const urgent = Boolean(view.timer && ratio < 0.28 && node.status === "running");
+  const showTimerLabel = Boolean(view.timer && (view.showTimerLabel || selected));
+  const secondaryAlert = view.secondary === "STALE" || view.secondary === "SUSPECTED";
+  const roleChanged = feedback.role || feedback.fields.has("role");
+  const knownChanged = feedback.fields.has("known");
+  const primaryChanged = feedback.fields.has("primary");
+  const secondaryChanged = feedback.fields.has("secondary");
 
   return (
     <div
       style={{ left: x, top: y }}
       {...stylex.props(nodeStyles.wrap, selected && nodeStyles.wrapSelected)}
     >
-      {flash ? <div {...stylex.props(nodeStyles.flash)}>{flash}</div> : null}
       <button
         type="button"
         onClick={(e) => {
@@ -54,60 +61,106 @@ export function NodeCard({
         }}
         {...stylex.props(
           nodeStyles.card,
+          compact && nodeStyles.cardCompact,
           selected && nodeStyles.selected,
+          related && !selected && nodeStyles.related,
+          feedback.send && !selected && nodeStyles.send,
+          feedback.receive && !selected && nodeStyles.receive,
+          feedback.receive && selected && nodeStyles.receiveSelected,
           node.status === "stopped" && nodeStyles.stopped,
           leader && nodeStyles.leader,
-          candidate && nodeStyles.candidate,
-          informed && !leader && nodeStyles.informed,
           stale && nodeStyles.stale,
-          Boolean(flash) && nodeStyles.flashing,
         )}
       >
-        <div {...stylex.props(nodeStyles.header)}>
-          <span {...stylex.props(nodeStyles.id)}>
-            <span
-              {...stylex.props(
-                nodeStyles.dot,
-                node.status === "stopped" && nodeStyles.dotStopped,
-              )}
-            />
-            {node.id}
-          </span>
+        <div {...stylex.props(nodeStyles.header, compact && nodeStyles.headerCompact)}>
+          <span {...stylex.props(nodeStyles.id, compact && nodeStyles.idCompact)}>{node.id}</span>
           <span
             {...stylex.props(
-              nodeStyles.status,
-              node.status === "stopped" && nodeStyles.statusDown,
+              nodeStyles.dot,
+              leader && nodeStyles.dotLeader,
+              candidate && nodeStyles.dotCandidate,
+              node.status === "stopped" && nodeStyles.dotStopped,
+            )}
+          />
+        </div>
+        {role ? (
+          <div
+            {...stylex.props(
+              nodeStyles.role,
+              compact && nodeStyles.roleCompact,
+              role === "FOLLOWER" && nodeStyles.roleFollower,
+              role === "CANDIDATE" && nodeStyles.roleCandidate,
+              leader && nodeStyles.roleLeader,
+              (role === "CRASHED" || node.status === "stopped") && nodeStyles.roleCrashed,
+              roleChanged && nodeStyles.rolePulse,
             )}
           >
-            {node.status === "stopped" ? "crashed" : "running"}
-          </span>
-        </div>
-        {role ? <div {...stylex.props(nodeStyles.role)}>{role}</div> : null}
-        {glance.lines.map((line) => (
-          <div key={line} {...stylex.props(nodeStyles.line)}>
-            {line}
+            {role}
           </div>
-        ))}
-        {glance.timer && node.status === "running" ? (
-          <div {...stylex.props(nodeStyles.timer)}>
-            <div {...stylex.props(nodeStyles.timerMeta)}>
-              <span>{glance.timer.name}</span>
-              <span>{remaining}ms</span>
-            </div>
-            <div {...stylex.props(nodeStyles.timerTrack)}>
-              <div
-                {...stylex.props(nodeStyles.timerFill, urgent && nodeStyles.timerUrgent)}
-                style={{ width: `${Math.max(4, ratio * 100)}%` }}
-              />
+        ) : null}
+        {view.placeholder ? (
+          <div
+            {...stylex.props(nodeStyles.placeholder, knownChanged && nodeStyles.fieldPulse)}
+          >
+            {view.placeholder}
+          </div>
+        ) : null}
+        {view.badges && view.badges.length > 0 ? (
+          <div {...stylex.props(nodeStyles.badges)}>
+            {view.badges.map((badge) => (
+              <span
+                key={badge.label}
+                {...stylex.props(nodeStyles.badge, knownChanged && nodeStyles.fieldPulse)}
+              >
+                [{badge.label}]
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {view.primary ? (
+          <div {...stylex.props(nodeStyles.line, primaryChanged && nodeStyles.fieldPulse)}>
+            {view.primary}
+          </div>
+        ) : null}
+        {(view.secondary && (view.density === "expanded" || selected)) || secondaryAlert ? (
+          <div
+            {...stylex.props(
+              nodeStyles.line,
+              nodeStyles.lineMuted,
+              secondaryAlert && nodeStyles.lineAlert,
+              secondaryChanged && nodeStyles.fieldPulse,
+            )}
+          >
+            {view.secondary}
+          </div>
+        ) : null}
+        {view.timer && node.status === "running" ? (
+          <div {...stylex.props(nodeStyles.timer, compact && nodeStyles.timerCompact)}>
+            {showTimerLabel ? (
+              <div {...stylex.props(nodeStyles.timerLabel)}>{timerLabel(view.timer.name)}</div>
+            ) : null}
+            <div {...stylex.props(nodeStyles.timerRow)}>
+              <div {...stylex.props(nodeStyles.timerTrack, compact && nodeStyles.timerTrackCompact)}>
+                <div
+                  {...stylex.props(
+                    nodeStyles.timerFill,
+                    urgent && nodeStyles.timerUrgent,
+                    feedback.timer && nodeStyles.timerFillPulse,
+                  )}
+                  style={{ width: `${Math.max(4, ratio * 100)}%` }}
+                />
+              </div>
+              <span
+                {...stylex.props(nodeStyles.timerRemain, feedback.timer && nodeStyles.timerPulse)}
+              >
+                {remaining}ms
+              </span>
             </div>
           </div>
         ) : null}
       </button>
       {selected ? (
-        <div
-          {...stylex.props(nodeStyles.actions)}
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div {...stylex.props(nodeStyles.actions)} onClick={(e) => e.stopPropagation()}>
           {node.status === "running" ? (
             <button type="button" onClick={onCrash} {...stylex.props(nodeStyles.danger)}>
               Crash
@@ -121,60 +174,4 @@ export function NodeCard({
       ) : null}
     </div>
   );
-}
-
-function useTransitionFlash(node: Node): string | null {
-  const prev = useRef<Record<string, unknown> | null>(null);
-  const [text, setText] = useState<string | null>(null);
-
-  useEffect(() => {
-    const next = {
-      status: node.status,
-      role: node.state.role,
-      term: node.state.term,
-      leader: node.state.leader,
-      commitIndex: node.state.commitIndex,
-      suspectedFailed: node.state.suspectedFailed,
-    };
-    const last = prev.current;
-    prev.current = next;
-    if (!last) return;
-    const parts: string[] = [];
-    if (last.status !== next.status) {
-      parts.push(next.status === "stopped" ? "crashed" : "restarted");
-    }
-    if (last.role !== next.role && typeof last.role === "string" && typeof next.role === "string") {
-      parts.push(`${last.role} → ${next.role}`);
-    }
-    if (last.term !== next.term && typeof next.term === "number") {
-      parts.push(`term ${String(last.term)} → ${next.term}`);
-    }
-    if (last.leader !== next.leader) {
-      parts.push(`leader: ${fmt(last.leader)} → ${fmt(next.leader)}`);
-    }
-    if (last.commitIndex !== next.commitIndex && typeof next.commitIndex === "number") {
-      parts.push(`commit ${String(last.commitIndex)} → ${next.commitIndex}`);
-    }
-    if (last.suspectedFailed !== next.suspectedFailed && next.suspectedFailed === true) {
-      parts.push("suspects failure");
-    }
-    if (parts.length === 0) return;
-    setText(parts.join(" · "));
-    const id = window.setTimeout(() => setText(null), 1400);
-    return () => window.clearTimeout(id);
-  }, [
-    node.status,
-    node.state.role,
-    node.state.term,
-    node.state.leader,
-    node.state.commitIndex,
-    node.state.suspectedFailed,
-  ]);
-
-  return text;
-}
-
-function fmt(v: unknown): string {
-  if (v == null) return "—";
-  return String(v);
 }

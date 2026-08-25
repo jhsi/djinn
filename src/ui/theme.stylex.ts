@@ -7,17 +7,20 @@ export const colors = stylex.defineVars({
   coral: "#FF4B6A",
   muted: "#8A8A82",
   faint: "#2E2E28",
-  white: "#1A1A16",
-  paleLime: "#1A2410",
-  paleCoral: "#2A1418",
+  white: "#161612",
+  paleLime: "#161A12",
+  paleCoral: "#221416",
   charcoal: "#111111",
-  leaf: "#9BE36A",
-  line: "#4A4A42",
+  leaf: "#7A9A4A",
+  quiet: "#5C7340",
+  line: "#6A6A60",
+  edge: "#3A3A34",
 });
 
 export const fonts = stylex.defineVars({
   mono: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
-  display: '"Syne", "IBM Plex Mono", sans-serif',
+  display: '"Syne", ui-sans-serif, system-ui, sans-serif',
+  ui: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
 });
 
 export const lightTheme = stylex.createTheme(colors, {
@@ -28,9 +31,11 @@ export const lightTheme = stylex.createTheme(colors, {
   muted: "#6B6B64",
   faint: "#D4D4CC",
   white: "#FFFEFA",
-  paleLime: "#EEF6C4",
-  paleCoral: "#FFE4E8",
+  paleLime: "#F2F4E8",
+  paleCoral: "#F7ECEC",
   charcoal: "#111111",
-  leaf: "#2F7A3C",
-  line: "#C8C8BE",
+  leaf: "#4A7A32",
+  quiet: "#5A7344",
+  line: "#A8A89E",
+  edge: "#C4C4BA",
 });

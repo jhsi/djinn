@@ -1,30 +1,41 @@
 import type { Scenario, ScenarioContext } from "../simulation/types";
-import { makeNodes } from "./helpers";
+import { clusterIds, makeNodes, nodeIds } from "./helpers";
 
-const RANKS: Record<string, number> = { A: 1, B: 2, C: 3 };
-const IDS = ["A", "B", "C"] as const;
 const HEARTBEAT_EVERY = 800;
 const ELECTION_TIMEOUT = 2500;
 const WAIT_FOR_OK = 700;
 const LATENCY = 150;
 
+function rankOf(id: string): number {
+  return id.charCodeAt(0) - 64;
+}
+
 export const election: Scenario = {
   id: "election",
   name: "Leader Election",
+  layout: "triangle",
+  configurableNodeCount: true,
+  defaultNodeCount: 3,
   description:
     "A simplified bully election. Highest live ID should become leader — but only through messages, never by global knowledge.",
-  createInitialState: () => ({
-    nodes: makeNodes([...IDS], (id) => ({
-      rank: RANKS[id],
-      role: id === "C" ? "LEADER" : "FOLLOWER",
-      leader: "C",
-      lastHeartbeat: 0,
-    })),
-  }),
+  createInitialState: (nodeCount = 3) => {
+    const ids = clusterIds(nodeCount);
+    const leader = ids[ids.length - 1];
+    return {
+      nodes: makeNodes(ids, (id) => ({
+        rank: rankOf(id),
+        role: id === leader ? "LEADER" : "FOLLOWER",
+        leader,
+        lastHeartbeat: 0,
+      })),
+    };
+  },
   onStart(ctx) {
-    becomeLeader("C", ctx, false);
-    for (const id of ["A", "B"]) {
-      ctx.setTimer(id, ELECTION_TIMEOUT, "election-timeout");
+    const ids = nodeIds(ctx);
+    const leader = ids[ids.length - 1];
+    becomeLeader(leader, ctx, false);
+    for (const id of ids) {
+      if (id !== leader) ctx.setTimer(id, ELECTION_TIMEOUT, "election-timeout");
     }
   },
   onMessage(nodeId, message, ctx) {
@@ -44,8 +55,8 @@ export const election: Scenario = {
     }
 
     if (payload.type === "ELECTION") {
-      const myRank = RANKS[nodeId];
-      const theirRank = RANKS[message.from];
+      const myRank = rankOf(nodeId);
+      const theirRank = rankOf(message.from);
       if (myRank > theirRank) {
         ctx.sendMessage(nodeId, message.from, { type: "OK" }, LATENCY);
         startElection(nodeId, ctx);
@@ -76,7 +87,7 @@ export const election: Scenario = {
   onTimer(nodeId, timer, ctx) {
     if (!ctx.isRunning(nodeId)) return;
     if (timer.name === "heartbeat" && ctx.getNode(nodeId).state.role === "LEADER") {
-      for (const to of IDS) {
+      for (const to of nodeIds(ctx)) {
         if (to !== nodeId) ctx.sendMessage(nodeId, to, { type: "HEARTBEAT" }, LATENCY);
       }
       ctx.setTimer(nodeId, HEARTBEAT_EVERY, "heartbeat");
@@ -106,14 +117,14 @@ export const election: Scenario = {
   },
 };
 
-function higherIds(id: string): string[] {
-  const rank = RANKS[id];
-  return IDS.filter((other) => RANKS[other] > rank);
+function higherIds(id: string, ctx: ScenarioContext): string[] {
+  const rank = rankOf(id);
+  return nodeIds(ctx).filter((other) => rankOf(other) > rank);
 }
 
 function startElection(nodeId: string, ctx: ScenarioContext) {
   if (!ctx.isRunning(nodeId)) return;
-  const higher = higherIds(nodeId);
+  const higher = higherIds(nodeId, ctx);
   ctx.updateNodeState(nodeId, {
     role: "CANDIDATE",
     leader: null,
@@ -144,13 +155,13 @@ function becomeLeader(nodeId: string, ctx: ScenarioContext, announce: boolean) {
   ctx.cancelTimers(nodeId, "heartbeat");
   if (announce) {
     ctx.log(`${nodeId} announces itself leader`);
-    for (const to of IDS) {
+    for (const to of nodeIds(ctx)) {
       if (to !== nodeId) {
         ctx.sendMessage(nodeId, to, { type: "COORDINATOR", leader: nodeId }, LATENCY);
       }
     }
   }
-  for (const to of IDS) {
+  for (const to of nodeIds(ctx)) {
     if (to !== nodeId) ctx.sendMessage(nodeId, to, { type: "HEARTBEAT" }, LATENCY);
   }
   ctx.setTimer(nodeId, HEARTBEAT_EVERY, "heartbeat");

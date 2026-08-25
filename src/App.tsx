@@ -3,10 +3,12 @@ import * as stylex from "@stylexjs/stylex";
 import { Simulation } from "./simulation/Simulation";
 import { SCENARIOS, getScenario } from "./scenarios";
 import type { PlaybackSpeed } from "./simulation/types";
+import { MAX_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from "./scenarios/helpers";
 import { colors, fonts, lightTheme } from "./ui/theme.stylex";
 import { Logo } from "./ui/Logo";
 import { useTheme } from "./ui/Theme";
-import { selectionFromLog, type Selection } from "./ui/selection";
+import { playbackRate } from "./ui/playback";
+import { eventKey, type Selection } from "./ui/selection";
 import { NetworkCanvas } from "./components/NetworkCanvas";
 import { EventTimeline } from "./components/EventTimeline";
 import { Inspector } from "./components/Inspector";
@@ -15,7 +17,8 @@ import { SimulationControls } from "./components/SimulationControls";
 export default function App() {
   const { theme, palette, toggleTheme } = useTheme();
   const [scenarioId, setScenarioId] = useState("raft");
-  const [sim, setSim] = useState(() => new Simulation(getScenario("raft")));
+  const [nodeCount, setNodeCount] = useState(3);
+  const [sim, setSim] = useState(() => new Simulation(getScenario("raft"), 3));
   const [selection, setSelection] = useState<Selection>(null);
   const subscribe = useCallback(
     (onStoreChange: () => void) => sim.subscribe(onStoreChange),
@@ -35,8 +38,10 @@ export default function App() {
     const loop = (now: number) => {
       const dt = Math.min(48, now - last);
       last = now;
-      const maxEvents = snapshot.speed >= 32 ? 10 : 40;
-      sim.advanceBy(dt * snapshot.speed, maxEvents);
+      const snap = sim.snapshot();
+      const rate = playbackRate(snap);
+      const maxEvents = snap.speed === "auto" ? 8 : snap.speed === 32 ? 10 : 40;
+      sim.advanceBy(dt * rate, maxEvents);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -57,14 +62,14 @@ export default function App() {
         sim.seekToPrevEvent();
         const snap = sim.snapshot();
         const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
-        setSelection(entry ? selectionFromLog(entry, snap) : null);
+        setSelection(entry ? { kind: "event", key: `log:${entry.seq}` } : null);
       }
       if (e.key === "ArrowRight") {
         e.preventDefault();
         sim.seekToNextEvent();
         const snap = sim.snapshot();
         const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
-        setSelection(entry ? selectionFromLog(entry, snap) : null);
+        setSelection(entry ? { kind: "event", key: `log:${entry.seq}` } : null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -72,12 +77,21 @@ export default function App() {
   }, [sim]);
 
   function loadScenario(id: string) {
+    const next = getScenario(id);
+    const count = next.configurableNodeCount ? (next.defaultNodeCount ?? 3) : undefined;
     setScenarioId(id);
-    setSim(new Simulation(getScenario(id)));
+    setNodeCount(count ?? 2);
+    setSim(new Simulation(next, count));
     setSelection(null);
   }
 
-  const running = snapshot.nodes.filter((n) => n.status === "running").length;
+  function applyNodeCount(count: number) {
+    if (snapshot.started || !scenario.configurableNodeCount) return;
+    setNodeCount(count);
+    setSim(new Simulation(scenario, count));
+    setSelection(null);
+  }
+
   const partitions =
     snapshot.partitions.length === 0
       ? "no partitions"
@@ -96,7 +110,7 @@ export default function App() {
           >
             <Logo size={28} crescent={palette.ink} />
           </button>
-          <div {...stylex.props(styles.wordmark)}>Druid</div>
+          <div {...stylex.props(styles.wordmark)}>djinn</div>
           <label {...stylex.props(styles.scenario)} title={scenario.description}>
             <select
               value={scenarioId}
@@ -110,13 +124,36 @@ export default function App() {
               ))}
             </select>
           </label>
+          {scenario.configurableNodeCount ? (
+            <label
+              {...stylex.props(styles.nodes)}
+              title={
+                snapshot.started
+                  ? "Reset the scenario to change node count"
+                  : "Nodes in this scenario"
+              }
+            >
+              <span {...stylex.props(styles.nodesLabel)}>Nodes</span>
+              <select
+                value={nodeCount}
+                disabled={snapshot.started}
+                onChange={(e) => applyNodeCount(Number(e.target.value))}
+                {...stylex.props(styles.select, snapshot.started && styles.selectLocked)}
+              >
+                {[...Array(MAX_CLUSTER_SIZE - MIN_CLUSTER_SIZE + 1)].map((_, i) => {
+                  const n = MIN_CLUSTER_SIZE + i;
+                  return (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+          ) : null}
         </div>
         <div {...stylex.props(styles.status)}>
           <span {...stylex.props(styles.time)}>{Math.round(snapshot.currentTime)}ms</span>
-          <span {...stylex.props(styles.dot)}>·</span>
-          <span>
-            {running}/{snapshot.nodes.length} nodes
-          </span>
           <span {...stylex.props(styles.dot)}>·</span>
           <span>{snapshot.inFlight.length} in flight</span>
           <span {...stylex.props(styles.dot)}>·</span>
@@ -179,13 +216,11 @@ export default function App() {
         onSeekTime={(time) => sim.seekToTime(time)}
         onSeekLog={(entry) => {
           sim.seekToLog(entry.seq);
-          setSelection(selectionFromLog(entry, sim.snapshot()));
+          setSelection({ kind: "event", key: `log:${entry.seq}` });
         }}
         onSeekPending={(event) => {
           sim.seekToTime(event.timestamp);
-          const snap = sim.snapshot();
-          const entry = snap.tapeLog.find((row) => row.seq === snap.playheadLogSeq);
-          setSelection(entry ? selectionFromLog(entry, snap) : null);
+          setSelection({ kind: "event", key: eventKey(event) });
         }}
       />
     </div>
@@ -200,6 +235,7 @@ const styles = stylex.create({
     flexDirection: "column",
     backgroundColor: colors.bg,
     color: colors.ink,
+    fontFamily: fonts.ui,
     overflow: "hidden",
   },
   logoBtn: {
@@ -217,8 +253,9 @@ const styles = stylex.create({
     zIndex: 1,
     display: "flex",
     alignItems: "center",
-    gap: 16,
-    padding: "10px 16px",
+    justifyContent: "space-between",
+    gap: 24,
+    padding: "8px 20px",
     borderBottomWidth: 1,
     borderBottomStyle: "solid",
     borderBottomColor: colors.faint,
@@ -227,7 +264,7 @@ const styles = stylex.create({
   brand: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
+    gap: 12,
     flexShrink: 0,
   },
   wordmark: {
@@ -238,37 +275,54 @@ const styles = stylex.create({
   },
   scenario: {
     display: "flex",
-    fontFamily: fonts.mono,
-    fontSize: 12,
+    fontFamily: fonts.ui,
+    fontSize: 13,
   },
   select: {
-    fontFamily: fonts.mono,
-    fontSize: 12,
+    fontFamily: fonts.ui,
+    fontSize: 13,
     color: colors.ink,
-    backgroundColor: colors.white,
-    borderWidth: 1,
-    borderStyle: "solid",
-    borderColor: colors.faint,
-    padding: "4px 8px",
+    backgroundColor: "transparent",
+    borderWidth: 0,
+    padding: "2px 0",
     maxWidth: 160,
+    cursor: "pointer",
+  },
+  selectLocked: {
+    opacity: 0.45,
+    cursor: "default",
+  },
+  nodes: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: 6,
+    fontFamily: fonts.ui,
+    fontSize: 13,
+    color: colors.muted,
+  },
+  nodesLabel: {
+    fontSize: 12,
+    letterSpacing: "0.04em",
   },
   status: {
     flex: 1,
     display: "flex",
     alignItems: "baseline",
     gap: 8,
-    fontFamily: fonts.mono,
+    fontFamily: fonts.ui,
     fontSize: 12,
     color: colors.muted,
     minWidth: 0,
     overflow: "hidden",
   },
   time: {
-    fontSize: 18,
+    fontFamily: fonts.mono,
+    fontSize: 22,
     fontWeight: 600,
     color: colors.ink,
     fontVariantNumeric: "tabular-nums",
-    letterSpacing: "-0.02em",
+    letterSpacing: "-0.03em",
+    marginRight: 4,
   },
   dot: {
     color: colors.faint,
@@ -282,7 +336,10 @@ const styles = stylex.create({
     flex: "1 1 auto",
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "1fr 340px",
+    gridTemplateColumns: {
+      default: "1fr 292px",
+      "@media (max-width: 1100px)": "1fr 248px",
+    },
   },
   side: {
     display: "flex",
@@ -291,7 +348,7 @@ const styles = stylex.create({
     borderLeftWidth: 1,
     borderLeftStyle: "solid",
     borderLeftColor: colors.faint,
-    backgroundColor: colors.white,
+    backgroundColor: colors.bg,
     overflow: "auto",
   },
 });
