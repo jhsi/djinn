@@ -2,6 +2,10 @@ import { CLIENT_ID, type GraphLayout, type Node, type Scenario } from "../simula
 
 export type Pos = { id: string; x: number; y: number };
 
+/** Center-to-center gap: client (118) + node (172) halves plus a short lane. */
+export const CLIENT_NODE_GAP = 220;
+const CLIENT_LINE_INSET = 180;
+
 export function resolveLayout(scenario: Scenario, nodes: Node[]): GraphLayout {
   if (nodes.length <= 2) return "line";
   if (scenario.layout === "leader-centered" || scenario.layout === "cluster") {
@@ -25,17 +29,31 @@ export function layoutGraph(
   client: boolean,
 ): Pos[] {
   const kind = resolveLayout(scenario, nodes);
-  const padX = Math.min(168, Math.max(108, width * 0.15)) + (client ? 72 : 0);
+  const line = kind === "line" || ids.length <= 2;
+  const baseX = Math.min(168, Math.max(108, width * 0.15));
   const padY = Math.min(140, Math.max(92, height * 0.17));
-  const innerW = Math.max(1, width - padX * 2);
+  const padLeft = baseX + (client ? (line ? CLIENT_LINE_INSET : 72) : 0);
+  const padRight = baseX + (client && !line ? 72 : 0);
+  const innerW = Math.max(1, width - padLeft - padRight);
   const innerH = Math.max(1, height - padY * 2);
 
-  if (kind === "line" || ids.length <= 2) {
+  const midY = padY + innerH * 0.5;
+  if (line) {
+    if (client && ids.length === 2) {
+      const abGap = Math.max(220, Math.min(innerW * 0.72, 340));
+      const aX = padLeft + Math.max(0, (innerW - abGap) / 2);
+      return [
+        { id: ids[0], x: aX, y: midY },
+        { id: ids[1], x: aX + abGap, y: midY },
+      ];
+    }
     return [
-      { id: ids[0], x: padX + innerW * 0.22, y: padY + innerH * 0.5 },
-      { id: ids[1], x: padX + innerW * 0.78, y: padY + innerH * 0.5 },
+      { id: ids[0], x: padLeft + innerW * 0.22, y: midY },
+      { id: ids[1], x: padLeft + innerW * 0.78, y: midY },
     ].filter((p) => p.id);
   }
+
+  const padX = padLeft;
 
   if (kind === "leader-centered" || kind === "cluster") {
     const lead =
@@ -80,11 +98,26 @@ export function layoutGraph(
   });
 }
 
+function topLeft(positions: Pos[]): Pos {
+  return positions.reduce((best, p) => {
+    if (p.y < best.y - 0.5) return p;
+    if (p.y > best.y + 0.5) return best;
+    return p.x < best.x ? p : best;
+  });
+}
+
 export function layoutClient(positions: Pos[], width: number, height: number): Pos {
   if (positions.length === 0) {
     return { id: CLIENT_ID, x: Math.min(88, width * 0.12), y: height * 0.42 };
   }
-  const top = positions.reduce((a, b) => (a.y < b.y ? a : b));
-  const x = Math.max(72, top.x - 168);
-  return { id: CLIENT_ID, x, y: top.y };
+  const peak = topLeft(positions);
+  const collinear = positions.every((p) => Math.abs(p.y - peak.y) < 12);
+  const anchor = collinear
+    ? positions.reduce((a, b) => (a.x <= b.x ? a : b))
+    : peak;
+  return {
+    id: CLIENT_ID,
+    x: Math.max(70, anchor.x - CLIENT_NODE_GAP),
+    y: anchor.y,
+  };
 }
