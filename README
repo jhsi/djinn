@@ -1,0 +1,3 @@
+# Druid
+
+a local-first workbench with 3–5 simulated nodes, deterministic execution, and actions triggered through a UI. No real distributed execution, no arbitrary user code, no sophisticated protocol implementation
